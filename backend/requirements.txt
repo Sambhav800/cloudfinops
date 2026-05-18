@@ -1,0 +1,65 @@
+# FastAPI Core
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+
+# Async Support
+httpx>=0.27.0
+
+# Authentication
+PyJWT>=2.8.0
+
+# Database
+motor>=3.6.0
+pymongo>=4.10.0
+
+# Cloud SDKs
+azure-identity>=1.15.0
+azure-mgmt-resource>=23.0.0
+azure-mgmt-compute>=30.0.0
+azure-mgmt-network>=25.0.0
+azure-mgmt-monitor>=6.0.0
+azure-mgmt-storage>=21.0.0
+azure-mgmt-costmanagement==4.0.1
+azure-storage-blob>=12.19.0
+boto3>=1.34.0
+google-cloud-compute>=1.0.0
+google-cloud-asset>=3.0.0
+google-api-python-client>=2.0.0
+google-auth>=2.0.0
+google-cloud-bigquery>=3.30.0
+
+# Utilities
+pydantic>=2.6.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
+pandas>=2.2.0
+openpyxl>=3.1.0
+xlrd>=2.0.1
+pdfplumber>=0.11.4
+pdfplumber>=0.11.4
+
+# Security
+python-jose[cryptography]>=3.3.0
+
+# Kubernetes
+kubernetes>=29.0.0
+
+# AI
+openai>=1.12.0
+google-generativeai>=0.4.0
+google-genai>=1.0.0
+mcp>=1.2.0
+statsmodels>=0.14.0
+
+# Caching
+redis>=5.0.0
+cachetools>=5.3.0
+
+# Background Workers
+APScheduler>=3.10.4
+
+# Notifications & Alerts
+twilio>=8.0.0
+resend>=0.7.0
+pdfkit>=1.0.0

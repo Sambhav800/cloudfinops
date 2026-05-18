@@ -1,0 +1,147 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+.pytest_cache/
+
+# next.js
+/.next/
+.next_prebuild_*/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (NEVER commit secrets)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# clerk configuration (can include secrets)
+/.clerk/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+venv/
+.venv/
+backend/.env
+
+# Supabase migrations (managed in Supabase dashboard, not git)
+supabase/
+
+# Backend migrations (run manually in Supabase SQL editor)
+backend/migrations/
+
+# Debug & utility scripts (local dev only)
+scripts/
+
+# Local task tracking (dev-only notes)
+tasks/
+
+# Dump / temp files
+*.dump
+*dump*.txt
+*repomix*
+backend_only.txt
+tsc_output.txt
+check_db*.mjs
+test_agent.py
+test_mcp.py
+trigger_scan.py
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+.aider*
+
+# Local Netlify folder
+.netlify
+
+# Codex automation runtime artifacts
+.codex/
+.codex/automations/logs/
+.codex/automations/reports/
+.codex/automations/tmp/
+
+# Local/generated agent and analysis artifacts
+.agent/
+.claude/
+outputs/
+graphify-out/
+
+# GitHub Actions GCP auth credentials
+gha-creds-*.json
+
+# Logs
+*.log
+backend/backend_startup.log
+backend/server.log
+backend-dev.out.log
+backend.log
+backend/backend.log
+frontend.log
+
+# Temporary/Debug Scripts
+check_db.py
+check_page.js
+test_azure_live.py
+test_mapping.js
+test_session.js
+test_user.js
+test.js
+trigger_scan.py
+read_pdf.py
+convert_to_pdf.py
+create_pdf_from_md.py
+generate_legal_pdfs.py
+generate_company_doc.py
+test_db.py
+check_db.py
+test_mapping.js
+
+# Assets/Legal (to be moved or kept out of git)
+7_Day_Zero_Risk_Audit_Agreement.*
+Founder_*
+Mutual_Non_Disclosure_Agreement.*
+CloudFinOps_Company_Documentation.pdf
+CloudFinOps_Company_Documentation_v2.5.pdf
+cloudfinops_logo.png
+
+# Other
+.omg/
+
+
+seed_demo_data.py
+verify_demo_data.py

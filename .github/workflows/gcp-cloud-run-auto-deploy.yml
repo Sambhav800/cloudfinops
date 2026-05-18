@@ -1,0 +1,246 @@
+name: GCP Cloud Run Auto Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: gcp-cloud-run-main
+  cancel-in-progress: true
+
+env:
+  PROJECT_ID: cloudfinops-test-001
+  PROJECT_NUMBER: "1080501412325"
+  REGION: us-central1
+  ARTIFACT_REPO: cloudfinops
+  BACKEND_SERVICE: cloudfinops-backend
+  FRONTEND_SERVICE: cloudfinops-frontend
+  WIF_PROVIDER: projects/1080501412325/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider
+  DEPLOYER_SERVICE_ACCOUNT: github-actions-deployer@cloudfinops-test-001.iam.gserviceaccount.com
+
+jobs:
+  deploy-backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BACKEND_IMAGE: us-central1-docker.pkg.dev/cloudfinops-test-001/cloudfinops/backend:${{ github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Build and push backend image
+        run: |
+          docker build -f backend/Dockerfile -t "$BACKEND_IMAGE" backend
+          docker push "$BACKEND_IMAGE"
+
+      - name: Deploy backend to Cloud Run
+        run: |
+          gcloud run deploy "$BACKEND_SERVICE" \
+            --project "$PROJECT_ID" \
+            --region "$REGION" \
+            --platform managed \
+            --image "$BACKEND_IMAGE" \
+            --min-instances 1 \
+            --quiet
+
+  deploy-frontend:
+    needs: deploy-backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      FRONTEND_IMAGE: us-central1-docker.pkg.dev/cloudfinops-test-001/cloudfinops/frontend:${{ github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Load live frontend build configuration
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+          from urllib.parse import urlsplit
+
+          project_id = os.environ["PROJECT_ID"]
+          region = os.environ["REGION"]
+          frontend_service = os.environ["FRONTEND_SERVICE"]
+          backend_service = os.environ["BACKEND_SERVICE"]
+
+          def gcloud_json(*args: str) -> dict:
+              command = [
+                  "gcloud",
+                  *args,
+                  "--project",
+                  project_id,
+                  "--region",
+                  region,
+                  "--format=json",
+              ]
+              return json.loads(subprocess.check_output(command, text=True))
+
+          frontend = gcloud_json("run", "services", "describe", frontend_service)
+          backend = gcloud_json("run", "services", "describe", backend_service)
+          backend_url = subprocess.check_output(
+              [
+                  "gcloud",
+                  "run",
+                  "services",
+                  "describe",
+                  backend_service,
+                  "--project",
+                  project_id,
+                  "--region",
+                  region,
+                  "--format=value(status.url)",
+              ],
+              text=True,
+          ).strip()
+
+          def extract_env(service: dict) -> dict:
+              values = {}
+              container = service["spec"]["template"]["spec"]["containers"][0]
+              for env_item in container.get("env", []):
+                  name = env_item.get("name")
+                  value = env_item.get("value")
+                  if name and value is not None:
+                      values[name] = value
+              return values
+
+          def validate_mongodb_uri(uri: str) -> None:
+              if not uri.startswith("mongodb"):
+                  raise SystemExit("Frontend runtime MONGODB_URI is missing or invalid.")
+              query = urlsplit(uri).query
+              if not query:
+                  return
+              invalid_tokens = [token for token in query.split("&") if token and "=" not in token]
+              if invalid_tokens:
+                  raise SystemExit(
+                      "Frontend runtime MONGODB_URI contains malformed query options: "
+                      + ", ".join(invalid_tokens)
+                  )
+
+          frontend_env = extract_env(frontend)
+          backend_env = extract_env(backend)
+
+          frontend_url = frontend.get("status", {}).get("url", "").strip()
+          build_args = {
+              "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY": frontend_env.get("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", ""),
+              "NEXT_PUBLIC_BACKEND_URL": backend_url,
+              "NEXT_PUBLIC_APP_URL": frontend_env.get("NEXT_PUBLIC_APP_URL", "") or frontend_url,
+              "NEXT_PUBLIC_FIREBASE_PROJECT_ID": frontend_env.get("NEXT_PUBLIC_FIREBASE_PROJECT_ID", ""),
+              "NEXT_PUBLIC_POSTHOG_KEY": frontend_env.get("NEXT_PUBLIC_POSTHOG_KEY", ""),
+              "NEXT_PUBLIC_SUPABASE_URL": frontend_env.get("NEXT_PUBLIC_SUPABASE_URL", ""),
+              "NEXT_PUBLIC_SUPABASE_ANON_KEY": frontend_env.get("NEXT_PUBLIC_SUPABASE_ANON_KEY", ""),
+          }
+
+          required_keys = (
+              "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY",
+              "NEXT_PUBLIC_BACKEND_URL",
+              "NEXT_PUBLIC_APP_URL",
+          )
+          missing_keys = [key for key in required_keys if not build_args[key]]
+          if missing_keys:
+              raise SystemExit(
+                  "Missing required frontend build variables from live Cloud Run config: "
+                  + ", ".join(missing_keys)
+              )
+
+          runtime_env = {
+              "CLERK_SECRET_KEY": backend_env.get("CLERK_SECRET_KEY", ""),
+              "ENCRYPTION_KEY": backend_env.get("ENCRYPTION_KEY", ""),
+              "GEMINI_API_KEY": backend_env.get("GEMINI_API_KEY", frontend_env.get("GEMINI_API_KEY", "")),
+              "MONGODB_DB_NAME": backend_env.get("MONGODB_DB_NAME", "cloudfinops"),
+              "MONGODB_URI": backend_env.get("MONGODB_URI", ""),
+              "NEXT_PUBLIC_APP_URL": build_args["NEXT_PUBLIC_APP_URL"],
+              "NEXT_PUBLIC_BACKEND_URL": backend_url,
+              "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY": build_args["NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY"],
+              "PYTHON_BACKEND_URL": backend_url,
+          }
+
+          runtime_required_keys = (
+              "CLERK_SECRET_KEY",
+              "ENCRYPTION_KEY",
+              "MONGODB_URI",
+              "PYTHON_BACKEND_URL",
+          )
+          missing_runtime_keys = [key for key in runtime_required_keys if not runtime_env[key]]
+          if missing_runtime_keys:
+              raise SystemExit(
+                  "Missing required frontend runtime variables from backend Cloud Run config: "
+                  + ", ".join(missing_runtime_keys)
+              )
+
+          validate_mongodb_uri(runtime_env["MONGODB_URI"])
+
+          runtime_env_path = Path(os.environ["RUNNER_TEMP"]) / "frontend-runtime-env.yaml"
+          runtime_env_path.write_text(
+              "".join(f"{key}: {json.dumps(value)}\n" for key, value in sorted(runtime_env.items())),
+              encoding="utf-8",
+          )
+
+          github_env = os.environ["GITHUB_ENV"]
+          with open(github_env, "a", encoding="utf-8") as handle:
+              for key, value in build_args.items():
+                  print(f"{key}<<EOF_GHA", file=handle)
+                  print(value, file=handle)
+                  print("EOF_GHA", file=handle)
+              print(f"FRONTEND_RUNTIME_ENV_FILE={runtime_env_path}", file=handle)
+          PY
+
+      - name: Build and push frontend image
+        run: |
+          docker build -f Dockerfile.frontend -t "$FRONTEND_IMAGE" \
+            --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" \
+            --build-arg NEXT_PUBLIC_BACKEND_URL="$NEXT_PUBLIC_BACKEND_URL" \
+            --build-arg NEXT_PUBLIC_APP_URL="$NEXT_PUBLIC_APP_URL" \
+            --build-arg NEXT_PUBLIC_FIREBASE_PROJECT_ID="$NEXT_PUBLIC_FIREBASE_PROJECT_ID" \
+            --build-arg NEXT_PUBLIC_POSTHOG_KEY="$NEXT_PUBLIC_POSTHOG_KEY" \
+            --build-arg NEXT_PUBLIC_SUPABASE_URL="$NEXT_PUBLIC_SUPABASE_URL" \
+            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY="$NEXT_PUBLIC_SUPABASE_ANON_KEY" \
+            .
+          docker push "$FRONTEND_IMAGE"
+
+      - name: Deploy frontend to Cloud Run
+        run: |
+          gcloud run deploy "$FRONTEND_SERVICE" \
+            --project "$PROJECT_ID" \
+            --region "$REGION" \
+            --platform managed \
+            --image "$FRONTEND_IMAGE" \
+            --env-vars-file "$FRONTEND_RUNTIME_ENV_FILE" \
+            --min-instances 1 \
+            --quiet

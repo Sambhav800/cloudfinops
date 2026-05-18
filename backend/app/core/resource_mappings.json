@@ -1,0 +1,170 @@
+{
+  "resources": {
+    "aws_instance": {
+      "vendor": "aws",
+      "service": "AmazonEC2",
+      "productFamily": "Compute Instance",
+      "components": [
+        {
+          "name": "Compute",
+          "hourly": true,
+          "filters": [
+            {"key": "instanceType", "attribute": "instance_type", "default": "m5.large"},
+            {"key": "operatingSystem", "value": "Linux"},
+            {"key": "tenancy", "value": "Shared"},
+            {"key": "preInstalledSw", "value": "NA"},
+            {"key": "capacitystatus", "value": "Used"}
+          ]
+        },
+        {
+          "name": "Root Disk",
+          "productFamily": "Storage",
+          "hourly": false,
+          "multiplier_attribute": "root_block_device.0.volume_size",
+          "filters": [
+            {"key": "volumeApiName", "attribute": "root_block_device.0.volume_type", "default": "gp3"}
+          ]
+        }
+      ]
+    },
+    "aws_s3_bucket": {
+      "vendor": "aws",
+      "service": "AmazonS3",
+      "productFamily": "Storage",
+      "components": [
+        {
+          "name": "Standard Storage",
+          "hourly": false,
+          "usage_baseline": 100,
+          "unit": "100GB Storage",
+          "filters": [
+            {"key": "volumeType", "value": "Standard"}
+          ]
+        }
+      ]
+    },
+    "aws_db_instance": {
+      "vendor": "aws",
+      "service": "AmazonRDS",
+      "productFamily": "Database Instance",
+      "components": [
+        {
+          "name": "Instance",
+          "hourly": true,
+          "filters": [
+            {"key": "instanceType", "attribute": "instance_class", "default": "db.t3.micro"},
+            {"key": "databaseEngine", "attribute": "engine", "transform": "title", "default": "PostgreSQL"},
+            {"key": "deploymentOption", "attribute": "multi_az", "transform": "multi_az", "default": "Single-AZ"}
+          ]
+        },
+        {
+          "name": "Storage",
+          "productFamily": "Database Storage",
+          "hourly": false,
+          "multiplier_attribute": "allocated_storage",
+          "filters": [
+            {"key": "volumeType", "attribute": "storage_type", "transform": "rds_volume_type", "default": "General Purpose"},
+            {"key": "deploymentOption", "attribute": "multi_az", "transform": "multi_az", "default": "Single-AZ"},
+            {"key": "databaseEngine", "attribute": "engine", "transform": "title", "default": "PostgreSQL"}
+          ]
+        }
+      ]
+    },
+    "aws_ebs_volume": {
+      "vendor": "aws",
+      "service": "AmazonEC2",
+      "productFamily": "Storage",
+      "components": [
+        {
+          "name": "Volume Storage",
+          "hourly": false,
+          "multiplier_attribute": "size",
+          "filters": [
+            {"key": "volumeApiName", "attribute": "type", "default": "gp3"}
+          ]
+        }
+      ]
+    },
+    "aws_autoscaling_group": {
+      "vendor": "aws",
+      "service": "AmazonEC2",
+      "productFamily": "Compute Instance",
+      "components": [
+        {
+          "name": "Desired Capacity",
+          "hourly": true,
+          "multiplier_attribute": "desired_capacity",
+          "filters": [
+            {"key": "instanceType", "attribute": "launch_template.0.instance_type", "default": "t3.medium"},
+            {"key": "operatingSystem", "value": "Linux"},
+            {"key": "tenancy", "value": "Shared"},
+            {"key": "preInstalledSw", "value": "NA"},
+            {"key": "capacitystatus", "value": "Used"}
+          ]
+        }
+      ]
+    },
+    "aws_eks_node_group": {
+      "vendor": "aws",
+      "service": "AmazonEC2",
+      "productFamily": "Compute Instance",
+      "components": [
+        {
+          "name": "Node Capacity",
+          "hourly": true,
+          "multiplier_attribute": "scaling_config.0.desired_size",
+          "filters": [
+            {"key": "instanceType", "attribute": "instance_types.0", "default": "t3.medium"},
+            {"key": "operatingSystem", "value": "Linux"},
+            {"key": "tenancy", "value": "Shared"},
+            {"key": "preInstalledSw", "value": "NA"},
+            {"key": "capacitystatus", "value": "Used"}
+          ]
+        }
+      ]
+    },
+    "aws_eip": {
+      "vendor": "aws",
+      "service": "AmazonEC2",
+      "productFamily": "IP Address",
+      "components": [
+        {
+          "name": "IP Address",
+          "hourly": true,
+          "filters": [
+            {"key": "group", "value": "ElasticIP:AdditionalAddress"}
+          ]
+        }
+      ]
+    },
+    "aws_nat_gateway": {
+      "vendor": "aws",
+      "service": "AmazonEC2",
+      "productFamily": "NAT Gateway",
+      "components": [
+        {
+          "name": "Gateway",
+          "hourly": true,
+          "filters": [
+            {"key": "usagetype", "value_regex": "/.*NatGateway-Hours/"}
+          ]
+        }
+      ]
+    },
+    "aws_alb": {
+      "vendor": "aws",
+      "service": "AmazonEC2",
+      "productFamily": "Load Balancer-Application",
+      "components": [
+        {
+          "name": "Fixed",
+          "hourly": true,
+          "filters": [
+            {"key": "usagetype", "value_regex": "/.*LoadBalancerUsage/"}
+          ]
+        }
+      ]
+    },
+    "aws_lb": "aws_alb"
+  }
+}

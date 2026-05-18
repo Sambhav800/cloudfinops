@@ -1,0 +1,42 @@
+FROM node:20-bookworm-slim AS base
+WORKDIR /app
+
+FROM base AS deps
+COPY package*.json ./
+RUN npm ci --legacy-peer-deps
+
+FROM base AS builder
+COPY --from=deps /app/node_modules ./node_modules
+COPY . ./
+
+# Build-time public vars (compiled into browser bundle as needed)
+ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=""
+ARG NEXT_PUBLIC_BACKEND_URL=""
+ARG NEXT_PUBLIC_APP_URL=""
+ARG NEXT_PUBLIC_FIREBASE_PROJECT_ID=""
+ARG NEXT_PUBLIC_POSTHOG_KEY=""
+ARG MONGODB_DB_NAME=""
+
+ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+ENV NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL}
+ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
+ENV NEXT_PUBLIC_FIREBASE_PROJECT_ID=${NEXT_PUBLIC_FIREBASE_PROJECT_ID}
+ENV NEXT_PUBLIC_POSTHOG_KEY=${NEXT_PUBLIC_POSTHOG_KEY}
+ENV MONGODB_DB_NAME=${MONGODB_DB_NAME}
+
+ENV NODE_ENV=production
+RUN npm run build
+
+FROM base AS runner
+ENV NODE_ENV=production
+ENV PORT=8080
+
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/next.config.ts ./next.config.ts
+
+EXPOSE 8080
+
+CMD ["sh", "-c", "npm run start -- -H 0.0.0.0 -p ${PORT}"]
