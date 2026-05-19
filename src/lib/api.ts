@@ -623,7 +623,7 @@ async function getBackendJson<T>(
 
         const response = await fetch(url.toString(), {
             headers,
-            next: { revalidate: 60 },
+            cache: "no-store",
         });
 
         if (!response.ok) {

@@ -4,7 +4,7 @@ import { DashboardFinanceLoader } from '@/components/dashboard/dashboard-finance
 import { syncUser } from '@/lib/sync-user';
 import { Suspense } from 'react';
 
-export const revalidate = 60;
+export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
     const actionableStatuses = new Set(['zombie', 'waste', 'non_compliant']);
