@@ -18,7 +18,7 @@ from ..core.finance import aggregate_daily_spend_rows
 
 logger = logging.getLogger(__name__)
 
-dashboard_summary_router = APIRouter(tags=["dashboard-summary"])
+dashboard_summary_router = APIRouter(prefix="/api", tags=["dashboard-summary"])
 
 
 async def _get_active_integrations_for_summary(db: MongoDBClient, user_id: str) -> list[dict[str, Any]]:
