@@ -664,7 +664,7 @@ export async function getDashboardPageData() {
                 || String(resource.provider || "").toLowerCase();
             const agg = providerAgg.get(provider);
             if (agg) {
-                agg.spend += toMetricNumber(resource.monthly_cost ?? resource.cost);
+                agg.spend += toMetricNumber(resource.cost);
                 agg.resources += 1;
             }
         }
