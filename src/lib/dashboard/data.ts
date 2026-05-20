@@ -647,6 +647,41 @@ export async function getDashboardPageData() {
         stats.infraHealth = { idleEC2: idleCount, unattachedEBS: ebsCount, unusedIPs: ipCount };
     }
 
+    // Build providerCosts from integrations + resources
+    if (stats && summary.integrations) {
+        const integrationProviderMap = new Map<string, string>();
+        for (const integ of summary.integrations) {
+            if (integ.id && integ.provider) {
+                integrationProviderMap.set(String(integ.id), String(integ.provider).toLowerCase());
+            }
+        }
+        const providerAgg = new Map<string, { spend: number; resources: number; savings: number }>();
+        for (const provider of ["aws", "azure", "gcp"]) {
+            providerAgg.set(provider, { spend: 0, resources: 0, savings: 0 });
+        }
+        for (const resource of resourceRows) {
+            const provider = integrationProviderMap.get(String(resource.integration_id || ""))
+                || String(resource.provider || "").toLowerCase();
+            const agg = providerAgg.get(provider);
+            if (agg) {
+                agg.spend += toMetricNumber(resource.monthly_cost ?? resource.cost);
+                agg.resources += 1;
+            }
+        }
+        const totalProviderSpend = Array.from(providerAgg.values()).reduce((s, a) => s + a.spend, 0);
+        if (stats.potentialSavings > 0 && totalProviderSpend > 0) {
+            for (const [, agg] of providerAgg) {
+                agg.savings = Math.round((agg.spend / totalProviderSpend) * stats.potentialSavings * 100) / 100;
+            }
+        }
+        stats.providerCosts = ["aws", "azure", "gcp"]
+            .map((p) => {
+                const data = providerAgg.get(p)!;
+                return { provider: p === "gcp" ? "GCP" : p.charAt(0).toUpperCase() + p.slice(1), spend: Math.round(data.spend * 100) / 100, resources: data.resources, savings: data.savings };
+            })
+            .filter((p) => p.spend > 0 || p.resources > 0);
+    }
+
     // Transform waste distribution
     const wasteData = (summary.waste_distribution || []).map((item) => ({
         category_name: item.category_name,

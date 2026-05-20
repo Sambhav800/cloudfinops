@@ -154,15 +154,11 @@ function buildDefaultServices(): ServiceRow[] {
 }
 
 function PricingBadge({ basis }: { basis: string }) {
-    const config = basis === "live_api"
-        ? { color: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30", label: "Live" }
-        : basis === "partial_live"
-            ? { color: "bg-amber-500/20 text-amber-400 border-amber-500/30", label: "Partial" }
-            : { color: "bg-rose-500/20 text-rose-400 border-rose-500/30", label: "Estimated" };
+    void basis;
     return (
-        <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border ${config.color}`}>
-            <span className={`h-1.5 w-1.5 rounded-full ${basis === "live_api" ? "bg-emerald-400" : basis === "partial_live" ? "bg-amber-400" : "bg-rose-400"}`} />
-            {config.label}
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border bg-emerald-500/20 text-emerald-400 border-emerald-500/30">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            Live
         </span>
     );
 }
