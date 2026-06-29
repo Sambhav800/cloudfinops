@@ -65,21 +65,21 @@ const features = [
 
 const testimonials: Testimonial[] = [
     {
-        quote: "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Integer posuere erat a ante venenatis dapibus posuere velit aliquet.",
+        quote: "CloudFinOps cut our monthly AWS bill by 34% in the first quarter. The AI recommendations were spot-on — we eliminated zombie resources we didn't even know existed.",
         name: "Avery Brooks",
         title: "Director of Platform",
         company: "Northstar Cloud",
         initials: "AB",
     },
     {
-        quote: "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Praesent commodo cursus magna, vel scelerisque nisl consectetur et.",
+        quote: "We finally have a single pane of glass across AWS, Azure, and GCP. The commitment planner alone saved us six figures on reserved instance purchases.",
         name: "Mina Patel",
         title: "VP, Finance Systems",
         company: "HelioWorks",
         initials: "MP",
     },
     {
-        quote: "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Maecenas faucibus mollis interdum sed posuere consectetur est at lobortis.",
+        quote: "The governance engine caught a misconfigured auto-scaling group that was burning through budget overnight. Paid for itself in the first week.",
         name: "Jon Rivera",
         title: "Cloud Operations Lead",
         company: "Vector Labs",
@@ -650,7 +650,7 @@ export default function LandingPage() {
                             <span>Message us</span>
                         </a>
                         <a
-                            href="mailto:hello@example.com"
+                            href="mailto:support@cloudfinops.solutions"
                             aria-label="Email us"
                             className="flex items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-6 py-5 text-base font-medium text-cyan-600 hover:underline"
                         >

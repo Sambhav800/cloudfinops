@@ -313,6 +313,24 @@ function getStatusMeta(status: ActionItem["status"]) {
     };
 }
 
+function computePriorityScore(action: ActionItem): number {
+    const savings = getActionDisplaySavings(action);
+    const created = new Date(action.created_at);
+    const daysSinceCreation = Number.isNaN(created.getTime())
+        ? 1
+        : Math.max(1, Math.floor((Date.now() - created.getTime()) / 86_400_000));
+    return savings * daysSinceCreation;
+}
+
+function getAgeIndicator(createdAt: string): { label: string; color: string } | null {
+    const created = new Date(createdAt);
+    if (Number.isNaN(created.getTime())) return null;
+    const daysPending = Math.floor((Date.now() - created.getTime()) / 86_400_000);
+    if (daysPending > 14) return { label: `${daysPending}d`, color: "text-rose-400 bg-rose-500/15" };
+    if (daysPending > 7) return { label: `${daysPending}d`, color: "text-amber-400 bg-amber-500/15" };
+    return { label: `${daysPending}d`, color: "text-emerald-400 bg-emerald-500/15" };
+}
+
 function getRiskBadge(riskLevel: string) {
     if (riskLevel === "high") {
         return "bg-rose-500/15 text-rose-400";
@@ -555,6 +573,8 @@ export function PendingActionsList({ initialActions }: { initialActions: ActionI
     const [requestError, setRequestError] = useState<string | null>(null);
     const [simulationModal, setSimulationModal] = useState<SimulationModalState>(null);
     const [copiedScript, setCopiedScript] = useState(false);
+    const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+    const [batchProcessing, setBatchProcessing] = useState(false);
 
     useEffect(() => {
         setActions(initialActions);
@@ -747,8 +767,74 @@ export function PendingActionsList({ initialActions }: { initialActions: ActionI
         }
     };
 
-    const filteredActions =
-        filter === "all" ? actions : actions.filter((action) => action.status === filter);
+    const filteredActions = (() => {
+        const base = filter === "all" ? actions : actions.filter((action) => action.status === filter);
+        return [...base].sort((a, b) => computePriorityScore(b) - computePriorityScore(a));
+    })();
+
+    const pendingFilteredIds = filteredActions
+        .filter((a) => a.status === "pending")
+        .map((a) => a.id);
+
+    const allPendingSelected = pendingFilteredIds.length > 0
+        && pendingFilteredIds.every((id) => selectedIds.has(id));
+
+    const toggleSelectAll = () => {
+        if (allPendingSelected) {
+            setSelectedIds(new Set());
+        } else {
+            setSelectedIds(new Set(pendingFilteredIds));
+        }
+    };
+
+    const toggleSelect = (id: string) => {
+        setSelectedIds((prev) => {
+            const next = new Set(prev);
+            if (next.has(id)) {
+                next.delete(id);
+            } else {
+                next.add(id);
+            }
+            return next;
+        });
+    };
+
+    const handleBatchApprove = async () => {
+        setBatchProcessing(true);
+        for (const id of selectedIds) {
+            const result = await mutatePendingAction(id, "/api/pending-actions/execute", {
+                notification_id: id,
+            });
+            if (!result?.success) break;
+            setActions((current) =>
+                current.map((action) =>
+                    action.id === id ? { ...action, status: "approved" } : action
+                )
+            );
+        }
+        setSelectedIds(new Set());
+        setBatchProcessing(false);
+        router.refresh();
+    };
+
+    const handleBatchReject = async () => {
+        setBatchProcessing(true);
+        for (const id of selectedIds) {
+            const result = await mutatePendingAction(id, "/api/pending-actions/reject", {
+                notification_id: id,
+                reason: "Batch rejected from dashboard",
+            });
+            if (!result?.success) break;
+            setActions((current) =>
+                current.map((action) =>
+                    action.id === id ? { ...action, status: "rejected" } : action
+                )
+            );
+        }
+        setSelectedIds(new Set());
+        setBatchProcessing(false);
+        router.refresh();
+    };
 
     const totalIdentified = actions.reduce(
         (sum, action) => sum + getActionDisplaySavings(action),
@@ -1052,6 +1138,38 @@ export function PendingActionsList({ initialActions }: { initialActions: ActionI
                 })}
             </div>
 
+            {selectedIds.size > 0 && (
+                <div className="flex items-center gap-3 rounded-2xl border border-indigo-500/30 bg-indigo-500/10 px-4 py-3">
+                    <span className="text-sm font-medium text-indigo-200">
+                        {selectedIds.size} selected
+                    </span>
+                    <div className="h-4 w-px bg-white/10" />
+                    <button
+                        onClick={() => void handleBatchApprove()}
+                        disabled={batchProcessing}
+                        className="flex items-center gap-1.5 rounded-lg bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-400 transition hover:bg-emerald-500/25 disabled:opacity-60"
+                    >
+                        <CheckCircle className="h-3.5 w-3.5" />
+                        {batchProcessing ? "Processing..." : "Approve All"}
+                    </button>
+                    <button
+                        onClick={() => void handleBatchReject()}
+                        disabled={batchProcessing}
+                        className="flex items-center gap-1.5 rounded-lg bg-rose-500/15 px-3 py-1.5 text-xs font-medium text-rose-400 transition hover:bg-rose-500/25 disabled:opacity-60"
+                    >
+                        <XCircle className="h-3.5 w-3.5" />
+                        {batchProcessing ? "Processing..." : "Reject All"}
+                    </button>
+                    <button
+                        onClick={() => setSelectedIds(new Set())}
+                        disabled={batchProcessing}
+                        className="ml-auto text-xs text-slate-400 transition hover:text-white"
+                    >
+                        Clear
+                    </button>
+                </div>
+            )}
+
             <div className="bg-slate-900/50 border border-white/10 rounded-2xl overflow-hidden">
                 {filteredActions.length === 0 ? (
                     <div className="p-8">
@@ -1064,9 +1182,17 @@ export function PendingActionsList({ initialActions }: { initialActions: ActionI
                     </div>
                 ) : (
                     <div className="overflow-x-auto">
-                        <table className="min-w-[1260px] w-full">
+                        <table className="min-w-[1320px] w-full">
                             <thead className="bg-white/[0.02] border-b border-white/10">
                                 <tr>
+                                    <th className="w-10 px-3 py-3">
+                                        <input
+                                            type="checkbox"
+                                            checked={allPendingSelected && pendingFilteredIds.length > 0}
+                                            onChange={toggleSelectAll}
+                                            className="h-3.5 w-3.5 rounded border-white/20 bg-transparent text-indigo-600 focus:ring-indigo-500/30"
+                                        />
+                                    </th>
                                     {[
                                         "Action",
                                         "Provider",
@@ -1111,6 +1237,18 @@ export function PendingActionsList({ initialActions }: { initialActions: ActionI
                                             key={action.id}
                                             className="hover:bg-white/[0.02] transition-colors"
                                         >
+                                            <td className="w-10 px-3 py-4 align-top">
+                                                {action.status === "pending" ? (
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={selectedIds.has(action.id)}
+                                                        onChange={() => toggleSelect(action.id)}
+                                                        className="h-3.5 w-3.5 rounded border-white/20 bg-transparent text-indigo-600 focus:ring-indigo-500/30"
+                                                    />
+                                                ) : (
+                                                    <span className="block h-3.5 w-3.5" />
+                                                )}
+                                            </td>
                                             <td className="px-4 py-4 align-top">
                                                 <div className="flex items-start gap-3 min-w-[280px]">
                                                     <div
@@ -1214,9 +1352,19 @@ export function PendingActionsList({ initialActions }: { initialActions: ActionI
                                                 </span>
                                             </td>
                                             <td className="px-4 py-4 align-top">
-                                                <span className="text-sm text-slate-400">
-                                                    {formatActionDate(action.created_at)}
-                                                </span>
+                                                <div className="flex items-center gap-2">
+                                                    <span className="text-sm text-slate-400">
+                                                        {formatActionDate(action.created_at)}
+                                                    </span>
+                                                    {action.status === "pending" && (() => {
+                                                        const age = getAgeIndicator(action.created_at);
+                                                        return age ? (
+                                                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${age.color}`}>
+                                                                {age.label}
+                                                            </span>
+                                                        ) : null;
+                                                    })()}
+                                                </div>
                                             </td>
                                             <td className="px-4 py-4 align-top">
                                                 {action.status === "pending" ? (

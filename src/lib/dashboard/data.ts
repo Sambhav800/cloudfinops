@@ -573,8 +573,8 @@ export async function getDashboardPageData() {
     const rawStats = summary.stats;
     let stats = null;
     if (rawStats) {
-        const totalSpend = toMetricNumber(rawStats.total_spend);
-        const potentialSavings = toMetricNumber(rawStats.potential_savings);
+        const totalSpend = toDisplayInrAmount(toMetricNumber(rawStats.total_spend), "USD");
+        const potentialSavings = toDisplayInrAmount(toMetricNumber(rawStats.potential_savings), "USD");
         stats = {
             totalSpend,
             potentialSavings,
@@ -664,7 +664,7 @@ export async function getDashboardPageData() {
                 || String(resource.provider || "").toLowerCase();
             const agg = providerAgg.get(provider);
             if (agg) {
-                agg.spend += toMetricNumber(resource.cost);
+                agg.spend += toDisplayInrAmount(toMetricNumber(resource.cost), sourceCurrencyForProvider(provider));
                 agg.resources += 1;
             }
         }

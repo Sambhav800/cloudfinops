@@ -61,8 +61,26 @@ def _remove_connection(user_id: str, websocket: WebSocket) -> None:
         del active_connections[user_id]
 
 
+def _is_allowed_origin(websocket: WebSocket) -> bool:
+    """Validate the WebSocket Origin header against allowed frontends."""
+    origin = websocket.headers.get("origin", "")
+    if not origin:
+        return True  # Non-browser clients (curl, SDKs) don't send Origin
+
+    settings = get_settings()
+    allowed = {settings.frontend_url}
+    if settings.debug:
+        allowed.update({"http://localhost:3000", "http://localhost:3001", "http://127.0.0.1:3000"})
+
+    return origin in allowed
+
+
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
     """WebSocket endpoint for real-time updates."""
+    if not _is_allowed_origin(websocket):
+        await websocket.close(code=1008)
+        return
+
     if not await _authenticate_websocket(websocket, user_id):
         await websocket.close(code=1008)
         return
@@ -149,10 +167,28 @@ def get_scan_progress(user_id: str) -> dict:
     progress = scan_progress_store.get(user_id)
     if not progress:
         return {"type": "idle", "percent": 0, "message": "No active scan", "status": "idle"}
-    
+
     # Auto-expire progress after 5 minutes of no updates
     if time.time() - progress.get("timestamp", 0) > 300:
         del scan_progress_store[user_id]
         return {"type": "idle", "percent": 0, "message": "No active scan", "status": "idle"}
-    
+
     return progress
+
+
+async def send_gpu_metrics_update(user_id: str, metrics: dict):
+    """Push real-time GPU utilization update to connected dashboards."""
+    await broadcast_to_user(user_id, {
+        "type": "gpu_metrics",
+        "payload": metrics,
+        "timestamp": time.time(),
+    })
+
+
+async def send_gpu_alert(user_id: str, alert: dict):
+    """Push a GPU intelligence alert (ghost detected, MIG opportunity, etc.)."""
+    await broadcast_to_user(user_id, {
+        "type": "gpu_alert",
+        "payload": alert,
+        "timestamp": time.time(),
+    })

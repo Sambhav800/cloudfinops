@@ -200,7 +200,16 @@ export function ShiftLeftSimulator(props: ShiftLeftSimulatorProps = {}) {
                 throw new Error('Terraform plan JSON must be an object.');
             }
 
-            const result = await simulateTerraformCost(parsedPlan, fileName);
+            let planToSubmit = parsedPlan;
+            let resolvedFilename = fileName;
+            if (!('resource_changes' in parsedPlan) && isRecord(parsedPlan.plan)) {
+                planToSubmit = parsedPlan.plan as Record<string, unknown>;
+                if (!resolvedFilename && typeof parsedPlan.filename === 'string') {
+                    resolvedFilename = parsedPlan.filename;
+                }
+            }
+
+            const result = await simulateTerraformCost(planToSubmit, resolvedFilename);
             if (result.error) {
                 setSimulationResult(null);
                 setError(result.error);

@@ -1,9 +1,50 @@
+import ipaddress
 import logging
 import httpx
 import os
+import socket
 from typing import Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+WEBHOOK_DOMAIN_ALLOWLIST = {
+    "hooks.slack.com",
+    "discord.com",
+    "discordapp.com",
+    "outlook.office.com",
+    "outlook.office365.com",
+}
+
+
+def _is_safe_webhook_url(url: str) -> bool:
+    """Validate webhook URL against SSRF attacks."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+
+    if parsed.scheme not in ("https",):
+        return False
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+
+    if any(hostname.endswith(f".{domain}") or hostname == domain for domain in WEBHOOK_DOMAIN_ALLOWLIST):
+        return True
+
+    try:
+        resolved = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        for _, _, _, _, sockaddr in resolved:
+            addr = ipaddress.ip_address(sockaddr[0])
+            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+                return False
+    except (socket.gaierror, ValueError):
+        return False
+
+    return True
+
 
 async def send_slack_alert(message: str, webhook_url: str) -> bool:
     """
@@ -11,7 +52,11 @@ async def send_slack_alert(message: str, webhook_url: str) -> bool:
     """
     if not webhook_url:
         return False
-        
+
+    if not _is_safe_webhook_url(webhook_url):
+        logger.warning("Blocked webhook request to disallowed URL: domain not in allowlist or resolves to private IP")
+        return False
+
     try:
         async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0")) as client:
             response = await client.post(

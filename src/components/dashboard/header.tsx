@@ -5,6 +5,7 @@ import {
     Bot,
     Calculator,
     CalendarClock,
+    Check,
     ChevronRight,
     Cpu,
     FileText,
@@ -19,6 +20,8 @@ import {
     Server,
     Settings,
     Shield,
+    Stars,
+    Trash2,
     TrendingUp,
     type LucideIcon,
     X,
@@ -28,7 +31,8 @@ import { AnimatePresence, motion } from "framer-motion";
 import { UserButton } from "@clerk/nextjs";
 import { usePathname, useRouter } from "next/navigation";
 
-import { useNotifications } from "@/components/dashboard/notification-provider";
+import { useNotifications, type Notification } from "@/components/dashboard/notification-provider";
+import { WatchdogModal } from "@/components/dashboard/watchdog-modal";
 
 type DashboardRoute = {
     description: string;
@@ -80,11 +84,11 @@ const DASHBOARD_ROUTES: DashboardRoute[] = [
     },
     {
         id: "savings",
-        label: "Savings",
+        label: "Recommendations",
         href: "/dashboard/pending-actions",
         section: "Govern",
-        pageTitle: "Savings Pipeline",
-        description: "Prioritize cost actions by impact, effort, and operational risk.",
+        pageTitle: "Recommendations",
+        description: "Prioritize cost actions by impact, urgency, and operational risk. Batch-approve or simulate before execution.",
         icon: TrendingUp,
     },
     {
@@ -170,15 +174,6 @@ const DASHBOARD_ROUTES: DashboardRoute[] = [
         icon: Calculator,
     },
     {
-        id: "alerts",
-        label: "Alerts",
-        href: "/dashboard/alerts",
-        section: "Intelligence",
-        pageTitle: "Alert Center",
-        description: "Triages workflow alerts, recommendations, and operational exceptions.",
-        icon: Bell,
-    },
-    {
         id: "gpu",
         label: "GPU Intelligence",
         href: "/dashboard/gpu",
@@ -224,7 +219,9 @@ export function Header() {
     const [showNotifications, setShowNotifications] = useState(false);
     const router = useRouter();
     const pathname = usePathname();
-    const { notifications, unreadCount, markAllRead } = useNotifications();
+    const { notifications, unreadCount, markAllRead, markAsRead, deleteNotification } = useNotifications();
+    const [showWatchdog, setShowWatchdog] = useState(false);
+    const [selectedNotifForAI, setSelectedNotifForAI] = useState<Notification | null>(null);
 
     const activeRoute = getActiveRoute(pathname);
     const pageMeta = activeRoute ?? DEFAULT_ROUTE_META;
@@ -461,19 +458,21 @@ export function Header() {
                                     animate={{ opacity: 1, y: 0, scale: 1 }}
                                     exit={{ opacity: 0, y: 12, scale: 0.98 }}
                                     transition={{ duration: 0.18 }}
-                                    className="absolute right-0 mt-2 w-80 origin-top-right overflow-hidden rounded-2xl border border-white/10 bg-slate-900/95 shadow-2xl shadow-black/40 backdrop-blur-xl"
+                                    className="absolute right-0 mt-2 w-96 origin-top-right overflow-hidden rounded-2xl border border-white/10 bg-slate-900/95 shadow-2xl shadow-black/40 backdrop-blur-xl"
                                 >
                                     <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
                                         <div>
                                             <span className="font-semibold text-white">Notifications</span>
-                                            <p className="mt-1 text-xs text-slate-500">
-                                                Approval requests, budget warnings, and scan events.
-                                            </p>
+                                            {unreadCount > 0 && (
+                                                <span className="ml-2 inline-flex items-center rounded-full bg-indigo-500/20 px-2 py-0.5 text-[10px] font-medium text-indigo-300">
+                                                    {unreadCount} unread
+                                                </span>
+                                            )}
                                         </div>
                                         {notifications.length > 0 ? (
                                             <button
                                                 type="button"
-                                                onClick={markAllRead}
+                                                onClick={() => void markAllRead()}
                                                 className="text-xs text-indigo-300 transition hover:text-white"
                                             >
                                                 Mark all read
@@ -482,43 +481,90 @@ export function Header() {
                                     </div>
 
                                     {notifications.length > 0 ? (
-                                        <div className="max-h-[320px] overflow-y-auto">
-                                            {notifications.map((notification) => (
-                                                <div
-                                                    key={notification.id}
-                                                    className={`border-b border-white/5 px-4 py-3 transition hover:bg-white/[0.03] ${!notification.isRead ? "bg-white/[0.02]" : ""}`}
-                                                >
-                                                    <div className="mb-1 flex items-start justify-between gap-3">
-                                                        <span
-                                                            className={`text-sm font-medium ${notification.type === "alert"
-                                                                ? "text-rose-400"
-                                                                : notification.type === "warning"
-                                                                    ? "text-amber-400"
-                                                                    : notification.type === "success"
-                                                                        ? "text-emerald-400"
-                                                                        : "text-indigo-300"
-                                                                }`}
-                                                        >
-                                                            {notification.title}
-                                                        </span>
-                                                        <span className="text-[10px] text-slate-500">
-                                                            {notification.time}
-                                                        </span>
+                                        <div className="max-h-[420px] overflow-y-auto">
+                                            {notifications.map((notification) => {
+                                                const typeColor = notification.type === "alert"
+                                                    ? "bg-rose-500"
+                                                    : notification.type === "warning"
+                                                        ? "bg-amber-500"
+                                                        : notification.type === "success"
+                                                            ? "bg-emerald-500"
+                                                            : "bg-indigo-400";
+                                                const titleColor = notification.type === "alert"
+                                                    ? "text-rose-400"
+                                                    : notification.type === "warning"
+                                                        ? "text-amber-400"
+                                                        : notification.type === "success"
+                                                            ? "text-emerald-400"
+                                                            : "text-indigo-300";
+
+                                                return (
+                                                    <div
+                                                        key={notification.id}
+                                                        className={`group border-b border-white/5 px-4 py-3 transition hover:bg-white/[0.03] ${!notification.isRead ? "bg-white/[0.02]" : ""}`}
+                                                    >
+                                                        <div className="flex items-start gap-3">
+                                                            <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${notification.isRead ? "bg-slate-700" : typeColor}`} />
+                                                            <div className="min-w-0 flex-1">
+                                                                <div className="flex items-start justify-between gap-2">
+                                                                    <span className={`text-sm font-medium leading-tight ${titleColor}`}>
+                                                                        {notification.title}
+                                                                    </span>
+                                                                    <span className="shrink-0 text-[10px] text-slate-500">
+                                                                        {notification.time}
+                                                                    </span>
+                                                                </div>
+                                                                {notification.message && (
+                                                                    <p className="mt-0.5 text-xs leading-relaxed text-slate-400 line-clamp-2">
+                                                                        {notification.message}
+                                                                    </p>
+                                                                )}
+                                                                <div className="mt-1.5 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => {
+                                                                            setSelectedNotifForAI(notification);
+                                                                            setShowWatchdog(true);
+                                                                            setShowNotifications(false);
+                                                                        }}
+                                                                        className="rounded-md p-1 text-indigo-400 transition hover:bg-indigo-500/20 hover:text-white"
+                                                                        title="Analyze with AI"
+                                                                    >
+                                                                        <Stars className="h-3.5 w-3.5" />
+                                                                    </button>
+                                                                    {!notification.isRead && (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => void markAsRead(notification.id)}
+                                                                            className="rounded-md p-1 text-slate-500 transition hover:bg-white/5 hover:text-white"
+                                                                            title="Mark as read"
+                                                                        >
+                                                                            <Check className="h-3.5 w-3.5" />
+                                                                        </button>
+                                                                    )}
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => void deleteNotification(notification.id)}
+                                                                        className="rounded-md p-1 text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-400"
+                                                                        title="Dismiss"
+                                                                    >
+                                                                        <Trash2 className="h-3.5 w-3.5" />
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+                                                        </div>
                                                     </div>
-                                                    <p className="text-xs leading-5 text-slate-400">
-                                                        {notification.message}
-                                                    </p>
-                                                </div>
-                                            ))}
+                                                );
+                                            })}
                                         </div>
                                     ) : (
                                         <div className="px-6 py-10 text-center">
                                             <Bell className="mx-auto h-5 w-5 text-slate-600" />
                                             <p className="mt-3 text-sm font-medium text-white">
-                                                No workflow alerts right now
+                                                No notifications right now
                                             </p>
                                             <p className="mt-1 text-xs text-slate-500">
-                                                New recommendations and budget events will appear here.
+                                                Cost recommendations, budget warnings, and scan events will appear here.
                                             </p>
                                         </div>
                                     )}
@@ -528,16 +574,22 @@ export function Header() {
                                             type="button"
                                             onClick={() => {
                                                 setShowNotifications(false);
-                                                router.push("/dashboard/alerts");
+                                                router.push("/dashboard/pending-actions");
                                             }}
                                             className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/[0.06] hover:text-white"
                                         >
-                                            Open alert center
+                                            View all recommendations
                                         </button>
                                     </div>
                                 </motion.div>
                             ) : null}
                         </AnimatePresence>
+
+                        <WatchdogModal
+                            isOpen={showWatchdog}
+                            onClose={() => setShowWatchdog(false)}
+                            context={(selectedNotifForAI ?? {}) as Record<string, unknown>}
+                        />
                     </div>
 
                     <div className="relative">

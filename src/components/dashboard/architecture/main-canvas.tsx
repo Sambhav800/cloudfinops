@@ -320,7 +320,7 @@ export function MainCanvas({
     }
 
     return (
-            <div className="flex min-h-[620px] flex-1 bg-slate-950/30">
+            <div className="flex min-h-[520px] flex-1 bg-slate-950/30">
             <div className={`min-w-0 flex-1 ${nodes.length > 0 ? 'border-r border-white/10' : ''}`}>
                 <div className="border-b border-white/10 bg-[linear-gradient(135deg,rgba(2,6,23,0.98),rgba(15,23,42,0.96),rgba(2,6,23,0.98))] px-5 py-5">
                     <div className="flex flex-wrap items-start justify-between gap-4">
@@ -356,7 +356,7 @@ export function MainCanvas({
                     </div>
                 </div>
 
-                <div className="relative p-5">
+                <div className="relative max-h-[70vh] overflow-auto p-5">
                     <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(99,102,241,0.12),transparent_32%),radial-gradient(circle_at_bottom_right,rgba(148,163,184,0.12),transparent_34%)]" />
                     <div className="relative">
                         <div className="mb-3 flex flex-wrap items-center justify-between gap-3 px-1">

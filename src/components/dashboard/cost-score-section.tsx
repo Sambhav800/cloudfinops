@@ -257,7 +257,7 @@ export function CostScoreSection({
 
             <div className="space-y-4">
                 <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
-                    <div className="rounded-2xl border border-white/10 border-t-2 border-t-indigo-500/60 bg-gradient-to-br from-slate-900/60 to-slate-900/40 p-6">
+                    <div className="overflow-hidden rounded-2xl border border-white/10 border-t-2 border-t-indigo-500/60 bg-gradient-to-br from-slate-900/60 to-slate-900/40 p-6">
                         <div className="flex h-full flex-col gap-5">
                             {isLoading ? (
                                 <>
@@ -368,48 +368,42 @@ export function CostScoreSection({
                                         </div>
 
                                         <div className="grid flex-1 grid-cols-1 gap-2 sm:grid-cols-2">
-                                            <div className="min-w-0 rounded-xl border border-white/5 bg-white/5 p-3">
+                                            <div className="min-w-0 overflow-hidden rounded-xl border border-white/5 bg-white/5 p-3">
                                                 <p className="text-[10px] uppercase tracking-wide text-slate-500">
                                                     Savings Share
                                                 </p>
-                                                <div className="mt-2 flex items-end justify-between gap-3">
-                                                    <p className="text-lg font-semibold text-white">
+                                                <div className="mt-2 flex items-baseline gap-2">
+                                                    <p className="shrink-0 text-lg font-semibold text-white">
                                                         {savingsShare.toFixed(1)}%
                                                     </p>
-                                                    <p className="text-right text-[10px] leading-4 text-slate-500">
-                                                        of live
-                                                        <br />
-                                                        spend
+                                                    <p className="truncate text-[10px] leading-4 text-slate-500">
+                                                        of live spend
                                                     </p>
                                                 </div>
                                             </div>
-                                            <div className="min-w-0 rounded-xl border border-white/5 bg-white/5 p-3">
+                                            <div className="min-w-0 overflow-hidden rounded-xl border border-white/5 bg-white/5 p-3">
                                                 <p className="text-[10px] uppercase tracking-wide text-slate-500">
                                                     AI Confidence
                                                 </p>
-                                                <div className="mt-2 flex items-end justify-between gap-3">
-                                                    <p className="text-lg font-semibold text-white">
+                                                <div className="mt-2 flex items-baseline gap-2">
+                                                    <p className="shrink-0 text-lg font-semibold text-white">
                                                         {aiConfidence}%
                                                     </p>
-                                                    <p className="text-right text-[10px] leading-4 text-slate-500">
-                                                        scan
-                                                        <br />
-                                                        confidence
+                                                    <p className="truncate text-[10px] leading-4 text-slate-500">
+                                                        scan confidence
                                                     </p>
                                                 </div>
                                             </div>
-                                            <div className="min-w-0 rounded-xl border border-white/5 bg-white/5 p-3 sm:col-span-2">
+                                            <div className="min-w-0 overflow-hidden rounded-xl border border-white/5 bg-white/5 p-3 sm:col-span-2">
                                                 <p className="text-[10px] uppercase tracking-wide text-slate-500">
                                                     Resources In Scope
                                                 </p>
-                                                <div className="mt-2 flex items-end justify-between gap-3">
-                                                    <p className="text-lg font-semibold text-white">
+                                                <div className="mt-2 flex items-baseline gap-2">
+                                                    <p className="shrink-0 text-lg font-semibold text-white">
                                                         {monitoredResources.toLocaleString()}
                                                     </p>
-                                                    <p className="text-right text-[10px] leading-4 text-slate-500">
-                                                        resources
-                                                        <br />
-                                                        tracked
+                                                    <p className="truncate text-[10px] leading-4 text-slate-500">
+                                                        resources tracked
                                                     </p>
                                                 </div>
                                             </div>
@@ -454,7 +448,7 @@ export function CostScoreSection({
 
                     <SavingsCopilotCard />
 
-                    <div className="rounded-2xl border border-white/10 border-t-2 border-t-sky-500/60 bg-gradient-to-br from-slate-900/60 to-slate-900/40 p-6">
+                    <div className="overflow-hidden rounded-2xl border border-white/10 border-t-2 border-t-sky-500/60 bg-gradient-to-br from-slate-900/60 to-slate-900/40 p-6">
                         {isLoading ? (
                             <div className="flex h-full flex-col justify-between gap-4">
                                 <div className="flex items-center gap-6">
@@ -485,17 +479,17 @@ export function CostScoreSection({
                             </div>
                         ) : (
                             <div className="flex h-full flex-col justify-between gap-4">
-                                <div className="flex items-center gap-6">
+                                <div className="flex flex-col items-center gap-4">
                                     <ProviderDonut
                                         data={donutData}
                                         total={displayedSpend}
                                     />
-                                    <div className="flex min-w-0 flex-col gap-3">
+                                    <div className="flex w-full min-w-0 flex-col gap-3">
                                         <div>
                                             <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
                                                 MTD Spend
                                             </p>
-                                            <p className="mt-1 text-2xl font-bold text-white">
+                                            <p className="mt-1 truncate text-2xl font-bold text-white">
                                                 {formatMoney(displayedSpend)}
                                             </p>
                                             <p className="mt-0.5 text-xs text-slate-500">
@@ -521,18 +515,18 @@ export function CostScoreSection({
                                                 return (
                                                     <div
                                                         key={key}
-                                                        className="flex items-center justify-between gap-3"
+                                                        className="flex items-center justify-between gap-2"
                                                     >
-                                                        <div className="flex items-center gap-1.5">
+                                                        <div className="flex min-w-0 items-center gap-1.5">
                                                             <span
                                                                 className="h-2 w-2 flex-shrink-0 rounded-full"
                                                                 style={{ backgroundColor: color }}
                                                             />
-                                                            <span className="text-xs font-medium uppercase text-slate-400">
+                                                            <span className="truncate text-xs font-medium uppercase text-slate-400">
                                                                 {providerCost.provider.toUpperCase()}
                                                             </span>
                                                         </div>
-                                                        <div className="flex items-center gap-2">
+                                                        <div className="flex shrink-0 items-center gap-2">
                                                             <span className="text-xs font-mono text-white">
                                                                 {formatMoney(providerCost.spend)}
                                                             </span>
@@ -548,29 +542,29 @@ export function CostScoreSection({
                                 </div>
 
                                 <div className="grid grid-cols-3 gap-2">
-                                    <div className="rounded-xl border border-white/5 bg-white/5 p-3">
+                                    <div className="min-w-0 rounded-xl border border-white/5 bg-white/5 p-3">
                                         <p className="text-[10px] uppercase tracking-wide text-slate-500">
                                             MTD Actual
                                         </p>
-                                        <p className="mt-1 text-sm font-bold text-white">
+                                        <p className="mt-1 truncate text-sm font-bold text-white">
                                             {formatMoney(displayedSpend)}
                                         </p>
                                         <p className="mt-0.5 text-[10px] text-slate-600">
                                             month to date
                                         </p>
                                     </div>
-                                    <div className="rounded-xl border border-emerald-500/10 bg-emerald-500/5 p-3">
+                                    <div className="min-w-0 rounded-xl border border-emerald-500/10 bg-emerald-500/5 p-3">
                                         <p className="text-[10px] uppercase tracking-wide text-emerald-600">
                                             Savings
                                         </p>
-                                        <p className="mt-1 text-sm font-bold text-emerald-400">
+                                        <p className="mt-1 truncate text-sm font-bold text-emerald-400">
                                             {formatMoney(displayedPotentialSavings)}
                                         </p>
                                         <p className="mt-0.5 text-[10px] text-slate-600">
                                             /month potential
                                         </p>
                                     </div>
-                                    <div className="rounded-xl border border-white/5 bg-white/5 p-3">
+                                    <div className="min-w-0 rounded-xl border border-white/5 bg-white/5 p-3">
                                         <p className="text-[10px] uppercase tracking-wide text-slate-500">
                                             Score
                                         </p>

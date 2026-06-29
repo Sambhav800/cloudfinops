@@ -17,10 +17,6 @@ steps:
       - --build-arg
       - NEXT_PUBLIC_POSTHOG_KEY=${_NEXT_PUBLIC_POSTHOG_KEY}
       - --build-arg
-      - NEXT_PUBLIC_GEMINI_API_KEY=${_NEXT_PUBLIC_GEMINI_API_KEY}
-      - --build-arg
-      - NEXT_PUBLIC_MONGODB_URI=${_NEXT_PUBLIC_MONGODB_URI}
-      - --build-arg
       - MONGODB_DB_NAME=${_MONGODB_DB_NAME}
       - .
   - name: gcr.io/cloud-builders/docker
@@ -51,6 +47,4 @@ substitutions:
   _NEXT_PUBLIC_APP_URL: ""
   _NEXT_PUBLIC_FIREBASE_PROJECT_ID: ""
   _NEXT_PUBLIC_POSTHOG_KEY: ""
-  _NEXT_PUBLIC_GEMINI_API_KEY: ""
-  _NEXT_PUBLIC_MONGODB_URI: ""
   _MONGODB_DB_NAME: ""

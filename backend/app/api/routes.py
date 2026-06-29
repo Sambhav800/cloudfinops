@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, File, Up
 from fastapi.responses import Response
 from typing import Any, Optional, List
 from pydantic import BaseModel, Field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from ..auth import get_current_user, ClerkUser
 from ..auth.user_profile import resolve_user_email, resolve_user_full_name
@@ -1407,7 +1407,7 @@ async def _clear_pending_notifications_for_integration(
         if not notification_id:
             continue
         try:
-            await db.delete("agent_notifications", {"id": notification_id})
+            await db.delete("agent_notifications", {"id": notification_id, "user_id": user_id})
             deleted_count += 1
         except Exception as error:
             logger.warning("Failed to delete stale notification %s: %s", notification_id, error)
@@ -1792,16 +1792,40 @@ async def trigger_scan(
         raise HTTPException(status_code=404, detail="Integration not found")
 
     # Prevent duplicate scans — check if one is already running
-    recent_scans = await db.select("scan_history", {
+    recent_scans = await db.select("scan_history", filters={
         "integration_id": request.integration_id,
         "user_id": user.id,
         "status": "running",
     })
     if recent_scans:
-        raise HTTPException(
-            status_code=409,
-            detail="A scan is already in progress for this integration.",
-        )
+        # Auto-expire stale scans stuck as "running" for > 15 minutes
+        stale_threshold = datetime.now(timezone.utc) - timedelta(minutes=15)
+        all_stale = True
+        for scan_record in recent_scans:
+            started_at = scan_record.get("started_at", "")
+            try:
+                scan_start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                if scan_start > stale_threshold:
+                    all_stale = False
+                    break
+            except (ValueError, TypeError):
+                pass
+        if all_stale:
+            # Mark all stale scans as failed so they stop blocking
+            for scan_record in recent_scans:
+                stale_id = scan_record.get("id")
+                if stale_id:
+                    await db.fail_scan_history(stale_id, "Scan timed out (auto-expired after 15 minutes)")
+            logger.warning(
+                "Auto-expired %d stale scan(s) for integration %s",
+                len(recent_scans),
+                request.integration_id,
+            )
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail="A scan is already in progress for this integration.",
+            )
 
     await log_audit_event(
         user_id=user.id,
@@ -1836,10 +1860,11 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
     if not isinstance(integration_metadata, dict):
         integration_metadata = {}
     
+    scan_id = None
     try:
         # Decrypt credentials
         credentials = decrypt_integration_credentials(integration)
-        
+
         # Create appropriate scanner
         if provider == "aws":
             access_key_id = str(credentials.get("access_key_id") or "").strip()
@@ -2578,6 +2603,9 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
             logger.error(f"Full traceback: {error_trace}")
             error_msg = str(e) or "Unknown error"
             await send_scan_progress(user_id, integration_id, 0, f"Error: {error_msg}")
+            # Mark scan_history as failed so it doesn't block future scans
+            if scan_id:
+                await db.fail_scan_history(scan_id, error_msg)
             await db.update_integration(
                 integration_id=integration_id,
                 user_id=user_id,
@@ -2801,6 +2829,18 @@ async def upload_bill(
             raise HTTPException(
                 status_code=413,
                 detail=f"File too large. Maximum upload size is {_MAX_BILL_UPLOAD_BYTES // (1024 * 1024)} MB.",
+            )
+
+        _MAGIC_BYTES = {
+            "pdf": b"%PDF",
+            "xlsx": b"PK\x03\x04",
+            "xls": b"\xd0\xcf\x11\xe0",
+        }
+        expected_magic = _MAGIC_BYTES.get(extension)
+        if expected_magic and not content[:len(expected_magic)] == expected_magic:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File content does not match expected .{extension} format.",
             )
         async def _try_gemini_direct_extraction(reason: str) -> dict[str, Any] | None:
             try:
@@ -3458,6 +3498,241 @@ async def get_gpu_summary(
     except Exception as e:
         logger.error("GPU summary failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="GPU analysis failed.")
+
+
+@router.get("/gpu/inventory")
+async def get_gpu_inventory(
+    provider: Optional[str] = None,
+    integration_id: Optional[str] = None,
+    user: ClerkUser = Depends(get_current_user),
+    db: MongoDBClient = Depends(get_db_client),
+):
+    """Multi-cloud GPU inventory with optional provider filter."""
+    try:
+        from ..core.gpu_service import GpuService
+        resources = await db.get_resources(user.id, integration_id)
+        service = GpuService()
+        report = service.get_gpu_summary(resources, integration_id)
+        gpu_resources = report.get("gpu_resources", [])
+        if provider:
+            gpu_resources = [r for r in gpu_resources if r.get("provider") == provider.lower()]
+        return {
+            "gpu_resources": gpu_resources,
+            "total_count": len(gpu_resources),
+            "providers": list(set(r.get("provider", "unknown") for r in gpu_resources)),
+        }
+    except Exception as e:
+        logger.error("GPU inventory failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="GPU inventory failed.")
+
+
+@router.get("/gpu/metrics/live")
+async def get_gpu_metrics_live(
+    user: ClerkUser = Depends(get_current_user),
+    db: MongoDBClient = Depends(get_db_client),
+):
+    """Current GPU metrics snapshot (last 5 min) for all user's GPU resources."""
+    try:
+        from ..core.gpu_metrics_store import GpuMetricsStore
+        store = GpuMetricsStore(db)
+        metrics = await store.get_all_live_metrics(user.id)
+        return {"metrics": metrics, "count": len(metrics)}
+    except Exception as e:
+        logger.error("GPU live metrics failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="GPU metrics unavailable.")
+
+
+@router.get("/gpu/metrics/history")
+async def get_gpu_metrics_history(
+    resource_id: str,
+    days: int = 7,
+    user: ClerkUser = Depends(get_current_user),
+    db: MongoDBClient = Depends(get_db_client),
+):
+    """Historical GPU metrics for charting (daily averages)."""
+    try:
+        from ..core.gpu_metrics_store import GpuMetricsStore
+        store = GpuMetricsStore(db)
+        history = await store.get_history(resource_id, days=min(days, 90))
+        return {"resource_id": resource_id, "days": days, "data": history}
+    except Exception as e:
+        logger.error("GPU metrics history failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="GPU metrics history unavailable.")
+
+
+@router.get("/gpu/forecast")
+@cache_response(expire_seconds=300)
+async def get_gpu_cost_forecast(
+    user: ClerkUser = Depends(get_current_user),
+    db: MongoDBClient = Depends(get_db_client),
+):
+    """GPU cost trajectory prediction (30-day and 90-day)."""
+    try:
+        from ..core.gpu_cost_forecast import GpuCostForecaster
+        forecaster = GpuCostForecaster(db)
+        return await forecaster.forecast(user.id, days=30)
+    except Exception as e:
+        logger.error("GPU forecast failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="GPU forecast unavailable.")
+
+
+@router.get("/gpu/workloads")
+async def get_gpu_workloads(
+    user: ClerkUser = Depends(get_current_user),
+    db: MongoDBClient = Depends(get_db_client),
+):
+    """GPU workload classification summary across all instances."""
+    try:
+        from ..core.gpu_service import GpuService
+        from ..core.gpu_metrics_store import GpuMetricsStore
+        from ..adk.tools.gpu_tools import gpu_classify_workload
+
+        resources = await db.get_resources(user.id)
+        service = GpuService()
+        report = service.get_gpu_summary(resources)
+        store = GpuMetricsStore(db)
+
+        classifications = []
+        for gpu in report.get("gpu_resources", []):
+            resource_id = gpu.get("id", "")
+            history = await store.get_history(resource_id, days=7)
+            daily_metrics = [h for h in history if h.get("sm_pct") is not None]
+            classification = gpu_classify_workload(resource_id, daily_metrics)
+            classifications.append({
+                **classification,
+                "name": gpu.get("name"),
+                "instance_type": gpu.get("instance_type"),
+                "provider": gpu.get("provider"),
+                "monthly_cost": gpu.get("monthly_cost"),
+            })
+
+        return {"workloads": classifications, "count": len(classifications)}
+    except Exception as e:
+        logger.error("GPU workloads failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="GPU workload classification failed.")
+
+
+@router.get("/gpu/pricing")
+@cache_response(expire_seconds=3600)
+async def get_gpu_live_pricing(
+    user: ClerkUser = Depends(get_current_user),
+):
+    """Live GPU pricing from all specialized clouds."""
+    try:
+        from ..core.gpu_pricing_service import GpuPricingService
+        service = GpuPricingService()
+        pricing = await service.get_all_gpu_pricing()
+        return {"pricing": pricing}
+    except Exception as e:
+        logger.error("GPU pricing failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="GPU pricing unavailable.")
+
+
+@router.post("/gpu/analyze")
+async def trigger_gpu_analysis(
+    user: ClerkUser = Depends(get_current_user),
+    db: MongoDBClient = Depends(get_db_client),
+):
+    """Trigger deep LLM-powered GPU analysis. Returns results inline."""
+    try:
+        from ..core.gpu_service import GpuService
+        from ..core.gpu_workload_analyzer import GpuWorkloadAnalyzer
+
+        resources = await db.get_resources(user.id)
+        service = GpuService()
+        summary = service.get_gpu_summary(resources)
+
+        analyzer = GpuWorkloadAnalyzer()
+        health_report = await analyzer.generate_health_report(summary)
+
+        return {
+            "summary": summary,
+            "ai_health_report": health_report,
+            "analysis_model": analyzer.model,
+        }
+    except Exception as e:
+        logger.error("GPU analysis failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="GPU analysis failed.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# API Intelligence
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/apis/summary")
+@cache_response(expire_seconds=600)
+async def get_api_summary(
+    integration_id: Optional[str] = None,
+    user: ClerkUser = Depends(get_current_user),
+    db: MongoDBClient = Depends(get_db_client),
+):
+    """Full API Intelligence report — ghost APIs, cache waste, shadow APIs, cost efficiency."""
+    try:
+        from ..core.api_intelligence import ApiIntelligenceService
+        resources = await db.get_resources(user.id, integration_id)
+        service = ApiIntelligenceService()
+        return service.get_api_summary(resources, integration_id)
+    except Exception as e:
+        logger.error("API summary failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="API analysis failed.")
+
+
+@router.get("/apis/inventory")
+async def get_api_inventory(
+    provider: Optional[str] = None,
+    integration_id: Optional[str] = None,
+    user: ClerkUser = Depends(get_current_user),
+    db: MongoDBClient = Depends(get_db_client),
+):
+    """Multi-cloud API inventory with optional provider filter."""
+    try:
+        from ..core.api_intelligence import ApiIntelligenceService
+        resources = await db.get_resources(user.id, integration_id)
+        service = ApiIntelligenceService()
+        report = service.get_api_summary(resources, integration_id)
+        api_resources = report.get("api_resources", [])
+        if provider:
+            api_resources = [r for r in api_resources if r.get("provider") == provider.lower()]
+        return {"api_resources": api_resources, "total_count": len(api_resources)}
+    except Exception as e:
+        logger.error("API inventory failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="API inventory failed.")
+
+
+@router.get("/apis/ghost")
+async def get_ghost_apis(
+    integration_id: Optional[str] = None,
+    user: ClerkUser = Depends(get_current_user),
+    db: MongoDBClient = Depends(get_db_client),
+):
+    """Ghost/idle APIs with fix commands."""
+    try:
+        from ..core.api_intelligence import ApiIntelligenceService
+        resources = await db.get_resources(user.id, integration_id)
+        service = ApiIntelligenceService()
+        report = service.get_api_summary(resources, integration_id)
+        return {"ghost_apis": report.get("ghost_apis", []), "count": report.get("ghost_api_count", 0)}
+    except Exception as e:
+        logger.error("Ghost APIs failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Ghost API detection failed.")
+
+
+@router.get("/apis/cost-per-request")
+async def get_api_cost_per_request(
+    integration_id: Optional[str] = None,
+    user: ClerkUser = Depends(get_current_user),
+    db: MongoDBClient = Depends(get_db_client),
+):
+    """Cost efficiency ranking — most expensive APIs per 1K requests."""
+    try:
+        from ..core.api_intelligence import ApiIntelligenceService
+        resources = await db.get_resources(user.id, integration_id)
+        service = ApiIntelligenceService()
+        report = service.get_api_summary(resources, integration_id)
+        return {"ranking": report.get("cost_per_request_ranking", [])}
+    except Exception as e:
+        logger.error("API cost-per-request failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="API cost analysis failed.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

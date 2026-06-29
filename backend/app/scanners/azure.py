@@ -1000,11 +1000,70 @@ class AzureWasteScanner:
                     hours_running = 730  # Approximate month
                     carbon = self._estimate_carbon(vm_size, region, hours_running)
                     
+                    # Extract VNet/Subnet from NIC for architecture topology
+                    vm_vnet_id = None
+                    vm_subnet_id = None
+                    try:
+                        if vm.network_profile and vm.network_profile.network_interfaces:
+                            primary_nic_ref = vm.network_profile.network_interfaces[0]
+                            nic_parts = primary_nic_ref.id.split("/")
+                            nic_rg = nic_parts[4]
+                            nic_name = nic_parts[-1]
+                            nic = self._azure_call(
+                                f"Azure NIC topology ({nic_name})",
+                                lambda: self.network_client.network_interfaces.get(
+                                    resource_group_name=nic_rg,
+                                    network_interface_name=nic_name
+                                ),
+                            )
+                            if nic and nic.ip_configurations:
+                                for ip_config in nic.ip_configurations:
+                                    if ip_config.subnet and ip_config.subnet.id:
+                                        subnet_parts = ip_config.subnet.id.split("/")
+                                        for idx, part in enumerate(subnet_parts):
+                                            if part.lower() == "virtualnetworks" and idx + 1 < len(subnet_parts):
+                                                vm_vnet_id = subnet_parts[idx + 1]
+                                            if part.lower() == "subnets" and idx + 1 < len(subnet_parts):
+                                                vm_subnet_id = subnet_parts[idx + 1]
+                                        break
+                    except Exception as e:
+                        logger.debug(f"Could not extract VNet/Subnet for {vm.name}: {e}")
+
                     base_metadata = {
                         "vm_size": vm_size,
                         "power_state": power_state,
-                        "cost_source": COST_SOURCE_ACTUAL if cost_is_real else COST_SOURCE_BILLING_UNAVAILABLE
+                        "cost_source": COST_SOURCE_ACTUAL if cost_is_real else COST_SOURCE_BILLING_UNAVAILABLE,
+                        "vnet_id": vm_vnet_id,
+                        "subnet_id": vm_subnet_id,
                     }
+
+                    # GPU instance detection (NC/ND/NV series)
+                    from ..core.gpu_specs import AZURE_GPU_PREFIXES, AZURE_GPU_SPECS, is_gpu_instance_type
+                    vm_size_lower = vm_size.lower().replace(" ", "").replace("-", "_")
+                    if is_gpu_instance_type(vm_size_lower, provider="azure"):
+                        base_metadata["is_gpu_instance"] = True
+                        base_metadata["instance_type"] = vm_size
+                        spec = AZURE_GPU_SPECS.get(vm_size_lower)
+                        if spec:
+                            base_metadata["gpu_type"] = f"{spec.gpu_count}× {spec.gpu_model}"
+                            base_metadata["gpu_count"] = spec.gpu_count
+                            base_metadata["supports_mig"] = spec.supports_mig
+                            base_metadata["gpu_memory_gb"] = spec.gpu_memory_gb
+                            base_metadata["gpu_architecture"] = spec.architecture
+                            if spec.supports_mig:
+                                base_metadata["gpu_optimization_insight"] = (
+                                    f"MIG-capable {spec.gpu_model} detected on Azure. "
+                                    f"Partition each GPU into up to {spec.mig_slices_per_gpu} slices for multi-tenant workloads."
+                                )
+                            elif "v100" in spec.gpu_model.lower():
+                                base_metadata["gpu_optimization_insight"] = (
+                                    "V100 GPU on Azure. Consider NC T4 v3 for inference or "
+                                    "specialized GPU clouds (Lambda Labs, RunPod) for 40-60% savings."
+                                )
+                            else:
+                                base_metadata["gpu_optimization_insight"] = (
+                                    f"{spec.gpu_model} GPU detected. Compare cost vs. specialized clouds."
+                                )
                     
                     # CLASSIFICATION
                     if power_state == "stopped":

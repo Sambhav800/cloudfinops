@@ -27,6 +27,7 @@ _CATEGORY_MULTIPLIERS: dict[str, dict[str, float]] = {
     "Load Balancing":  {"aws": 1.000, "gcp": 1.000, "azure": 1.000},
     "Kubernetes":      {"aws": 1.000, "gcp": 0.870, "azure": 0.900},
     "Serverless":      {"aws": 1.000, "gcp": 1.080, "azure": 1.000},
+    "API":             {"aws": 1.000, "gcp": 0.920, "azure": 1.100},
     "Machine Learning":{"aws": 1.000, "gcp": 0.900, "azure": 1.050},
     "Data Warehouse":  {"aws": 1.000, "gcp": 0.850, "azure": 1.120},
     "Security":        {"aws": 1.000, "gcp": 0.980, "azure": 1.010},
@@ -53,6 +54,10 @@ _SERVICE_TO_CATEGORY: dict[str, str] = {
     # Serverless
     "lambda": "Serverless", "azure function": "Serverless",
     "cloud function": "Serverless",
+    # API
+    "api gateway": "API", "aws api gateway": "API", "apigateway": "API",
+    "api management": "API", "azure api management": "API",
+    "cloud endpoints": "API", "gcp api gateway": "API", "apigee": "API",
     # Machine Learning
     "sagemaker": "Machine Learning", "vertex ai": "Machine Learning",
     "azure ml": "Machine Learning",
@@ -67,9 +72,9 @@ _SERVICE_TO_CATEGORY: dict[str, str] = {
 }
 
 _PROVIDER_SERVICES: dict[str, dict[str, str]] = {
-    "aws":   {"Compute": "EC2",      "Database": "RDS",      "Storage": "S3",      "Kubernetes": "EKS",      "Serverless": "Lambda",      "Machine Learning": "SageMaker"},
-    "gcp":   {"Compute": "Compute Engine", "Database": "Cloud SQL", "Storage": "Cloud Storage", "Kubernetes": "GKE", "Serverless": "Cloud Functions", "Machine Learning": "Vertex AI"},
-    "azure": {"Compute": "Azure VMs", "Database": "Azure SQL", "Storage": "Blob Storage", "Kubernetes": "AKS", "Serverless": "Azure Functions", "Machine Learning": "Azure ML"},
+    "aws":   {"Compute": "EC2",      "Database": "RDS",      "Storage": "S3",      "Kubernetes": "EKS",      "Serverless": "Lambda",      "API": "API Gateway",      "Machine Learning": "SageMaker"},
+    "gcp":   {"Compute": "Compute Engine", "Database": "Cloud SQL", "Storage": "Cloud Storage", "Kubernetes": "GKE", "Serverless": "Cloud Functions", "API": "API Gateway / Endpoints", "Machine Learning": "Vertex AI"},
+    "azure": {"Compute": "Azure VMs", "Database": "Azure SQL", "Storage": "Blob Storage", "Kubernetes": "AKS", "Serverless": "Azure Functions", "API": "API Management",     "Machine Learning": "Azure ML"},
 }
 
 _RISK_SCORE: dict[str, int] = {

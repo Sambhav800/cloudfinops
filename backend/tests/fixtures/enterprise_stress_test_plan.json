@@ -1,0 +1,940 @@
+{
+  "test_metadata": {
+    "name": "CloudFinOps Enterprise Stress Test v1",
+    "purpose": "Validate cost simulator pricing accuracy, finding triggers, and scanner resource type coverage across all three clouds",
+    "expected_monthly_delta_range": [28000, 35000],
+    "expected_findings": ["ec2-old-generation", "ebs-gp2-to-gp3", "public-ipv4-cost", "nat-gateway-baseline"],
+    "expected_unestimated_count": 3,
+    "covers": {
+      "providers": ["aws", "azure", "gcp"],
+      "actions": ["create", "update", "delete", "no-op"],
+      "resource_families": ["compute", "storage", "network", "database", "serverless", "kubernetes", "other"],
+      "regions": {
+        "aws": ["us-east-1", "eu-west-1", "ap-southeast-1"],
+        "azure": ["eastus", "westeurope", "centralindia"],
+        "gcp": ["us-central1", "europe-west1", "asia-east1"]
+      }
+    }
+  },
+  "filename": "enterprise-multi-cloud-plan.tfplan",
+  "plan": {
+    "format_version": "1.2",
+    "terraform_version": "1.7.5",
+    "configuration": {
+      "provider_config": {
+        "aws": {
+          "name": "aws",
+          "expressions": { "region": { "constant_value": "us-east-1" } }
+        },
+        "aws.eu": {
+          "name": "aws",
+          "expressions": { "region": { "constant_value": "eu-west-1" } }
+        },
+        "aws.apac": {
+          "name": "aws",
+          "expressions": { "region": { "constant_value": "ap-southeast-1" } }
+        },
+        "azurerm": {
+          "name": "azurerm",
+          "expressions": { "location": { "constant_value": "eastus" } }
+        },
+        "azurerm.eu": {
+          "name": "azurerm",
+          "expressions": { "location": { "constant_value": "westeurope" } }
+        },
+        "google": {
+          "name": "google",
+          "expressions": { "region": { "constant_value": "us-central1" } }
+        },
+        "google.eu": {
+          "name": "google",
+          "expressions": { "region": { "constant_value": "europe-west1" } }
+        }
+      }
+    },
+    "resource_changes": [
+      {
+        "address": "module.production.aws_instance.api_cluster[0]",
+        "type": "aws_instance",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "ami": "ami-0c55b159cbfafe1f0",
+            "instance_type": "m5.2xlarge",
+            "availability_zone": "us-east-1a",
+            "tags": { "Name": "api-cluster-0", "Environment": "production", "Team": "platform" },
+            "root_block_device": [{ "volume_size": 200, "volume_type": "gp3", "encrypted": true }],
+            "ebs_block_device": [{ "volume_size": 500, "volume_type": "gp3", "device_name": "/dev/sdf" }]
+          }
+        }
+      },
+      {
+        "address": "module.production.aws_instance.api_cluster[1]",
+        "type": "aws_instance",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "ami": "ami-0c55b159cbfafe1f0",
+            "instance_type": "m5.2xlarge",
+            "availability_zone": "us-east-1b",
+            "tags": { "Name": "api-cluster-1", "Environment": "production", "Team": "platform" },
+            "root_block_device": [{ "volume_size": 200, "volume_type": "gp3", "encrypted": true }]
+          }
+        }
+      },
+      {
+        "address": "module.production.aws_instance.api_cluster[2]",
+        "type": "aws_instance",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "ami": "ami-0c55b159cbfafe1f0",
+            "instance_type": "m5.2xlarge",
+            "availability_zone": "us-east-1c",
+            "tags": { "Name": "api-cluster-2", "Environment": "production", "Team": "platform" },
+            "root_block_device": [{ "volume_size": 200, "volume_type": "gp3", "encrypted": true }]
+          }
+        }
+      },
+      {
+        "address": "module.production.aws_instance.worker_pool[0]",
+        "type": "aws_instance",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["update"],
+          "before": {
+            "ami": "ami-0c55b159cbfafe1f0",
+            "instance_type": "c5.large",
+            "availability_zone": "us-east-1a",
+            "root_block_device": [{ "volume_size": 100, "volume_type": "gp3" }]
+          },
+          "after": {
+            "ami": "ami-0c55b159cbfafe1f0",
+            "instance_type": "c5.xlarge",
+            "availability_zone": "us-east-1a",
+            "tags": { "Name": "worker-pool-0", "Environment": "production" },
+            "root_block_device": [{ "volume_size": 200, "volume_type": "gp3" }]
+          }
+        }
+      },
+      {
+        "address": "module.production.aws_instance.cache_node",
+        "type": "aws_instance",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["no-op"],
+          "before": {
+            "instance_type": "r5.xlarge",
+            "availability_zone": "us-east-1a",
+            "root_block_device": [{ "volume_size": 100, "volume_type": "gp3" }]
+          },
+          "after": {
+            "instance_type": "r5.xlarge",
+            "availability_zone": "us-east-1a",
+            "root_block_device": [{ "volume_size": 100, "volume_type": "gp3" }]
+          }
+        }
+      },
+      {
+        "address": "module.legacy.aws_instance.monolith",
+        "type": "aws_instance",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "ami": "ami-oldgen123",
+            "instance_type": "m4.large",
+            "availability_zone": "us-east-1a",
+            "tags": { "Name": "legacy-monolith", "Environment": "staging" },
+            "root_block_device": [{ "volume_size": 500, "volume_type": "gp2" }]
+          }
+        }
+      },
+      {
+        "address": "module.legacy.aws_instance.batch_worker",
+        "type": "aws_instance",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "ami": "ami-oldgen456",
+            "instance_type": "t2.micro",
+            "availability_zone": "eu-west-1a",
+            "region": "eu-west-1",
+            "tags": { "Name": "batch-worker", "Environment": "production" },
+            "root_block_device": [{ "volume_size": 30, "volume_type": "gp2" }]
+          }
+        }
+      },
+      {
+        "address": "module.data_tier.aws_db_instance.primary",
+        "type": "aws_db_instance",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "identifier": "prod-primary-db",
+            "engine": "postgres",
+            "engine_version": "15.4",
+            "instance_class": "db.m5.large",
+            "allocated_storage": 500,
+            "storage_type": "io1",
+            "iops": 3000,
+            "multi_az": true,
+            "availability_zone": "us-east-1a",
+            "tags": { "Name": "primary-db", "Environment": "production", "Backup": "daily" }
+          }
+        }
+      },
+      {
+        "address": "module.data_tier.aws_db_instance.replica",
+        "type": "aws_db_instance",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "identifier": "prod-read-replica",
+            "engine": "postgres",
+            "engine_version": "15.4",
+            "instance_class": "db.t3.large",
+            "allocated_storage": 500,
+            "storage_type": "gp3",
+            "multi_az": false,
+            "availability_zone": "us-east-1b"
+          }
+        }
+      },
+      {
+        "address": "module.data_tier.aws_db_instance.analytics",
+        "type": "aws_db_instance",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["delete"],
+          "before": {
+            "identifier": "legacy-analytics-db",
+            "engine": "mysql",
+            "instance_class": "db.t3.medium",
+            "allocated_storage": 200,
+            "storage_type": "gp2",
+            "multi_az": false,
+            "availability_zone": "us-east-1a"
+          },
+          "after": null
+        }
+      },
+      {
+        "address": "module.storage.aws_ebs_volume.data_warehouse",
+        "type": "aws_ebs_volume",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "availability_zone": "us-east-1a",
+            "size": 2000,
+            "type": "io1",
+            "iops": 10000,
+            "encrypted": true,
+            "tags": { "Name": "data-warehouse-vol", "Tier": "critical" }
+          }
+        }
+      },
+      {
+        "address": "module.storage.aws_ebs_volume.logs_archive",
+        "type": "aws_ebs_volume",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "availability_zone": "us-east-1b",
+            "size": 5000,
+            "type": "gp2",
+            "encrypted": true,
+            "tags": { "Name": "logs-archive", "Tier": "cold" }
+          }
+        }
+      },
+      {
+        "address": "module.storage.aws_ebs_volume.etl_scratch",
+        "type": "aws_ebs_volume",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "availability_zone": "us-east-1a",
+            "size": 1000,
+            "type": "st1",
+            "tags": { "Name": "etl-scratch" }
+          }
+        }
+      },
+      {
+        "address": "module.network.aws_eip.nat[0]",
+        "type": "aws_eip",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": { "domain": "vpc", "tags": { "Name": "nat-eip-az1" } }
+        }
+      },
+      {
+        "address": "module.network.aws_eip.nat[1]",
+        "type": "aws_eip",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": { "domain": "vpc", "tags": { "Name": "nat-eip-az2" } }
+        }
+      },
+      {
+        "address": "module.network.aws_nat_gateway.main[0]",
+        "type": "aws_nat_gateway",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "subnet_id": "subnet-abc123",
+            "allocation_id": "eipalloc-abc123",
+            "tags": { "Name": "nat-gw-az1", "Environment": "production" }
+          }
+        }
+      },
+      {
+        "address": "module.network.aws_nat_gateway.main[1]",
+        "type": "aws_nat_gateway",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "subnet_id": "subnet-def456",
+            "allocation_id": "eipalloc-def456",
+            "tags": { "Name": "nat-gw-az2", "Environment": "production" }
+          }
+        }
+      },
+      {
+        "address": "module.network.aws_lb.api_alb",
+        "type": "aws_lb",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "prod-api-alb",
+            "internal": false,
+            "load_balancer_type": "application",
+            "subnets": ["subnet-abc123", "subnet-def456"],
+            "tags": { "Name": "api-alb", "Environment": "production" }
+          }
+        }
+      },
+      {
+        "address": "module.k8s.aws_eks_cluster.platform",
+        "type": "aws_eks_cluster",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "platform-eks",
+            "version": "1.29",
+            "role_arn": "arn:aws:iam::123456789012:role/eks-cluster-role",
+            "tags": { "Name": "platform-eks", "Team": "infra" }
+          }
+        }
+      },
+      {
+        "address": "module.serverless.aws_lambda_function.event_processor",
+        "type": "aws_lambda_function",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "function_name": "event-processor",
+            "runtime": "python3.12",
+            "memory_size": 1024,
+            "timeout": 300,
+            "tags": { "Environment": "production" }
+          }
+        }
+      },
+      {
+        "address": "module.serverless.aws_s3_bucket.data_lake",
+        "type": "aws_s3_bucket",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "bucket": "company-data-lake-prod",
+            "tags": { "Environment": "production", "DataClass": "confidential" }
+          }
+        }
+      },
+      {
+        "address": "module.network.aws_security_group.api",
+        "type": "aws_security_group",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "api-sg",
+            "vpc_id": "vpc-abc123",
+            "tags": { "Name": "api-security-group" }
+          }
+        }
+      },
+      {
+        "address": "module.unsupported.aws_bedrock_custom_model.finops_llm",
+        "type": "aws_bedrock_custom_model",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "model_name": "finops-advisor-v2",
+            "base_model_identifier": "anthropic.claude-3-sonnet",
+            "tags": { "Team": "ml" }
+          }
+        }
+      },
+      {
+        "address": "module.apac.aws_instance.edge_node",
+        "type": "aws_instance",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "ami": "ami-0apac123",
+            "instance_type": "t3.xlarge",
+            "availability_zone": "ap-southeast-1a",
+            "region": "ap-southeast-1",
+            "tags": { "Name": "apac-edge", "Region": "APAC" },
+            "root_block_device": [{ "volume_size": 100, "volume_type": "gp3" }]
+          }
+        }
+      },
+      {
+        "address": "module.azure_prod.azurerm_linux_virtual_machine.app_server[0]",
+        "type": "azurerm_linux_virtual_machine",
+        "provider_name": "registry.terraform.io/hashicorp/azurerm",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "app-server-0",
+            "location": "eastus",
+            "size": "Standard_D4s_v3",
+            "admin_username": "azureadmin",
+            "os_disk": [{ "storage_account_type": "Premium_LRS", "disk_size_gb": 128 }],
+            "tags": { "Environment": "production", "Team": "backend" }
+          }
+        }
+      },
+      {
+        "address": "module.azure_prod.azurerm_linux_virtual_machine.app_server[1]",
+        "type": "azurerm_linux_virtual_machine",
+        "provider_name": "registry.terraform.io/hashicorp/azurerm",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "app-server-1",
+            "location": "eastus",
+            "size": "Standard_D4s_v3",
+            "os_disk": [{ "storage_account_type": "Premium_LRS", "disk_size_gb": 128 }],
+            "tags": { "Environment": "production", "Team": "backend" }
+          }
+        }
+      },
+      {
+        "address": "module.azure_prod.azurerm_linux_virtual_machine.gpu_worker",
+        "type": "azurerm_linux_virtual_machine",
+        "provider_name": "registry.terraform.io/hashicorp/azurerm",
+        "change": {
+          "actions": ["update"],
+          "before": {
+            "name": "gpu-worker",
+            "location": "eastus",
+            "size": "Standard_B2ms"
+          },
+          "after": {
+            "name": "gpu-worker",
+            "location": "eastus",
+            "size": "Standard_E4s_v3",
+            "os_disk": [{ "storage_account_type": "Premium_LRS", "disk_size_gb": 256 }],
+            "tags": { "Environment": "production", "Team": "ml" }
+          }
+        }
+      },
+      {
+        "address": "module.azure_eu.azurerm_linux_virtual_machine.eu_replica",
+        "type": "azurerm_linux_virtual_machine",
+        "provider_name": "registry.terraform.io/hashicorp/azurerm",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "eu-replica",
+            "location": "westeurope",
+            "size": "Standard_D2s_v3",
+            "os_disk": [{ "storage_account_type": "StandardSSD_LRS", "disk_size_gb": 64 }],
+            "tags": { "Environment": "production", "Region": "EU" }
+          }
+        }
+      },
+      {
+        "address": "module.azure_prod.azurerm_linux_virtual_machine.monitoring",
+        "type": "azurerm_linux_virtual_machine",
+        "provider_name": "registry.terraform.io/hashicorp/azurerm",
+        "change": {
+          "actions": ["no-op"],
+          "before": {
+            "name": "monitoring-vm",
+            "location": "eastus",
+            "size": "Standard_B4ms"
+          },
+          "after": {
+            "name": "monitoring-vm",
+            "location": "eastus",
+            "size": "Standard_B4ms",
+            "os_disk": [{ "storage_account_type": "StandardSSD_LRS", "disk_size_gb": 64 }]
+          }
+        }
+      },
+      {
+        "address": "module.azure_data.azurerm_managed_disk.db_data",
+        "type": "azurerm_managed_disk",
+        "provider_name": "registry.terraform.io/hashicorp/azurerm",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "db-data-disk",
+            "location": "eastus",
+            "storage_account_type": "Premium_LRS",
+            "disk_size_gb": 1024,
+            "tags": { "Tier": "critical" }
+          }
+        }
+      },
+      {
+        "address": "module.azure_data.azurerm_managed_disk.backup_cold",
+        "type": "azurerm_managed_disk",
+        "provider_name": "registry.terraform.io/hashicorp/azurerm",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "backup-cold-disk",
+            "location": "eastus",
+            "storage_account_type": "Standard_LRS",
+            "disk_size_gb": 4096,
+            "tags": { "Tier": "archive" }
+          }
+        }
+      },
+      {
+        "address": "module.azure_data.azurerm_mssql_database.warehouse",
+        "type": "azurerm_mssql_database",
+        "provider_name": "registry.terraform.io/hashicorp/azurerm",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "analytics-warehouse",
+            "sku_name": "GP_S_Gen5_4",
+            "max_size_gb": 500,
+            "location": "eastus",
+            "tags": { "Team": "data" }
+          }
+        }
+      },
+      {
+        "address": "module.azure_data.azurerm_mssql_database.legacy_reporting",
+        "type": "azurerm_mssql_database",
+        "provider_name": "registry.terraform.io/hashicorp/azurerm",
+        "change": {
+          "actions": ["delete"],
+          "before": {
+            "name": "legacy-reporting",
+            "sku_name": "S2",
+            "max_size_gb": 250,
+            "location": "eastus"
+          },
+          "after": null
+        }
+      },
+      {
+        "address": "module.azure_app.azurerm_service_plan.api",
+        "type": "azurerm_service_plan",
+        "provider_name": "registry.terraform.io/hashicorp/azurerm",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "prod-api-plan",
+            "location": "eastus",
+            "os_type": "Linux",
+            "sku_name": "P2v3",
+            "tags": { "Environment": "production" }
+          }
+        }
+      },
+      {
+        "address": "module.azure_k8s.azurerm_kubernetes_cluster.platform",
+        "type": "azurerm_kubernetes_cluster",
+        "provider_name": "registry.terraform.io/hashicorp/azurerm",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "prod-aks-cluster",
+            "location": "eastus",
+            "dns_prefix": "prodaks",
+            "default_node_pool": [{ "name": "default", "vm_size": "Standard_D4s_v3", "node_count": 5 }],
+            "tags": { "Environment": "production" }
+          }
+        }
+      },
+      {
+        "address": "module.azure_network.azurerm_public_ip.lb_frontend",
+        "type": "azurerm_public_ip",
+        "provider_name": "registry.terraform.io/hashicorp/azurerm",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "lb-frontend-pip",
+            "location": "eastus",
+            "allocation_method": "Static",
+            "sku": "Standard",
+            "tags": { "Environment": "production" }
+          }
+        }
+      },
+      {
+        "address": "module.azure_network.azurerm_lb.api",
+        "type": "azurerm_lb",
+        "provider_name": "registry.terraform.io/hashicorp/azurerm",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "prod-api-lb",
+            "location": "eastus",
+            "sku": "Standard",
+            "tags": { "Environment": "production" }
+          }
+        }
+      },
+      {
+        "address": "module.azure_serverless.azurerm_function_app.etl_pipeline",
+        "type": "azurerm_function_app",
+        "provider_name": "registry.terraform.io/hashicorp/azurerm",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "etl-pipeline-func",
+            "location": "eastus",
+            "os_type": "Linux",
+            "tags": { "Team": "data" }
+          }
+        }
+      },
+      {
+        "address": "module.azure_india.azurerm_linux_virtual_machine.compliance_node",
+        "type": "azurerm_linux_virtual_machine",
+        "provider_name": "registry.terraform.io/hashicorp/azurerm",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "compliance-node",
+            "location": "centralindia",
+            "size": "Standard_F4s_v2",
+            "os_disk": [{ "storage_account_type": "Premium_LRS", "disk_size_gb": 64 }],
+            "tags": { "Environment": "production", "Compliance": "RBI" }
+          }
+        }
+      },
+      {
+        "address": "module.azure_unsupported.azurerm_orbital_spacecraft.telemetry",
+        "type": "azurerm_orbital_spacecraft",
+        "provider_name": "registry.terraform.io/hashicorp/azurerm",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "telemetry-sat-link",
+            "location": "eastus",
+            "tags": { "Team": "iot" }
+          }
+        }
+      },
+      {
+        "address": "module.gcp_prod.google_compute_instance.api_server[0]",
+        "type": "google_compute_instance",
+        "provider_name": "registry.terraform.io/hashicorp/google",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "api-server-0",
+            "machine_type": "n2-standard-8",
+            "zone": "us-central1-a",
+            "boot_disk": [{ "initialize_params": [{ "size": 200, "type": "pd-ssd", "image": "debian-12" }] }],
+            "labels": { "env": "production", "team": "platform" }
+          }
+        }
+      },
+      {
+        "address": "module.gcp_prod.google_compute_instance.api_server[1]",
+        "type": "google_compute_instance",
+        "provider_name": "registry.terraform.io/hashicorp/google",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "api-server-1",
+            "machine_type": "n2-standard-8",
+            "zone": "us-central1-b",
+            "boot_disk": [{ "initialize_params": [{ "size": 200, "type": "pd-ssd", "image": "debian-12" }] }],
+            "labels": { "env": "production", "team": "platform" }
+          }
+        }
+      },
+      {
+        "address": "module.gcp_prod.google_compute_instance.ml_trainer",
+        "type": "google_compute_instance",
+        "provider_name": "registry.terraform.io/hashicorp/google",
+        "change": {
+          "actions": ["update"],
+          "before": {
+            "name": "ml-trainer",
+            "machine_type": "e2-standard-4",
+            "zone": "us-central1-a",
+            "boot_disk": [{ "initialize_params": [{ "size": 100, "type": "pd-balanced" }] }]
+          },
+          "after": {
+            "name": "ml-trainer",
+            "machine_type": "c2-standard-8",
+            "zone": "us-central1-a",
+            "boot_disk": [{ "initialize_params": [{ "size": 500, "type": "pd-ssd" }] }],
+            "labels": { "env": "production", "team": "ml" }
+          }
+        }
+      },
+      {
+        "address": "module.gcp_prod.google_compute_instance.bastion",
+        "type": "google_compute_instance",
+        "provider_name": "registry.terraform.io/hashicorp/google",
+        "change": {
+          "actions": ["no-op"],
+          "before": {
+            "name": "bastion",
+            "machine_type": "e2-micro",
+            "zone": "us-central1-a",
+            "boot_disk": [{ "initialize_params": [{ "size": 10, "type": "pd-standard" }] }]
+          },
+          "after": {
+            "name": "bastion",
+            "machine_type": "e2-micro",
+            "zone": "us-central1-a",
+            "boot_disk": [{ "initialize_params": [{ "size": 10, "type": "pd-standard" }] }]
+          }
+        }
+      },
+      {
+        "address": "module.gcp_data.google_compute_disk.warehouse_storage",
+        "type": "google_compute_disk",
+        "provider_name": "registry.terraform.io/hashicorp/google",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "warehouse-storage",
+            "zone": "us-central1-a",
+            "type": "pd-ssd",
+            "size": 2000,
+            "labels": { "tier": "hot" }
+          }
+        }
+      },
+      {
+        "address": "module.gcp_data.google_compute_disk.cold_archive",
+        "type": "google_compute_disk",
+        "provider_name": "registry.terraform.io/hashicorp/google",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "cold-archive",
+            "zone": "us-central1-b",
+            "type": "pd-standard",
+            "size": 10000,
+            "labels": { "tier": "cold" }
+          }
+        }
+      },
+      {
+        "address": "module.gcp_data.google_sql_database_instance.primary",
+        "type": "google_sql_database_instance",
+        "provider_name": "registry.terraform.io/hashicorp/google",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "prod-cloudsql-primary",
+            "database_version": "POSTGRES_15",
+            "region": "us-central1",
+            "settings": [{ "tier": "db-n1-standard-4", "disk_size": 500, "disk_type": "PD_SSD", "availability_type": "REGIONAL" }],
+            "labels": { "env": "production" }
+          }
+        }
+      },
+      {
+        "address": "module.gcp_data.google_sql_database_instance.replica",
+        "type": "google_sql_database_instance",
+        "provider_name": "registry.terraform.io/hashicorp/google",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "prod-cloudsql-replica",
+            "database_version": "POSTGRES_15",
+            "region": "us-central1",
+            "settings": [{ "tier": "db-n1-standard-2", "disk_size": 500, "disk_type": "PD_SSD" }],
+            "labels": { "env": "production", "role": "replica" }
+          }
+        }
+      },
+      {
+        "address": "module.gcp_k8s.google_container_cluster.platform",
+        "type": "google_container_cluster",
+        "provider_name": "registry.terraform.io/hashicorp/google",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "platform-gke",
+            "location": "us-central1",
+            "initial_node_count": 3,
+            "node_config": [{ "machine_type": "n2-standard-4", "disk_size_gb": 100 }],
+            "labels": { "env": "production" }
+          }
+        }
+      },
+      {
+        "address": "module.gcp_network.google_compute_address.api_ingress",
+        "type": "google_compute_address",
+        "provider_name": "registry.terraform.io/hashicorp/google",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "api-ingress-ip",
+            "region": "us-central1",
+            "address_type": "EXTERNAL"
+          }
+        }
+      },
+      {
+        "address": "module.gcp_network.google_compute_forwarding_rule.api_lb",
+        "type": "google_compute_forwarding_rule",
+        "provider_name": "registry.terraform.io/hashicorp/google",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "api-lb-rule",
+            "region": "us-central1",
+            "port_range": "443",
+            "load_balancing_scheme": "EXTERNAL"
+          }
+        }
+      },
+      {
+        "address": "module.gcp_serverless.google_cloud_run_v2_service.api_gateway",
+        "type": "google_cloud_run_v2_service",
+        "provider_name": "registry.terraform.io/hashicorp/google",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "api-gateway",
+            "location": "us-central1",
+            "template": [{ "containers": [{ "image": "gcr.io/project/api:v2", "resources": [{ "limits": { "cpu": "2", "memory": "4Gi" } }] }] }],
+            "labels": { "env": "production" }
+          }
+        }
+      },
+      {
+        "address": "module.gcp_serverless.google_cloudfunctions2_function.event_handler",
+        "type": "google_cloudfunctions2_function",
+        "provider_name": "registry.terraform.io/hashicorp/google",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "event-handler",
+            "location": "us-central1",
+            "build_config": [{ "runtime": "python312", "entry_point": "handle_event" }],
+            "service_config": [{ "available_memory": "512M", "timeout_seconds": 300 }],
+            "labels": { "team": "platform" }
+          }
+        }
+      },
+      {
+        "address": "module.gcp_eu.google_compute_instance.eu_edge",
+        "type": "google_compute_instance",
+        "provider_name": "registry.terraform.io/hashicorp/google",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "eu-edge-node",
+            "machine_type": "n2-standard-4",
+            "zone": "europe-west1-b",
+            "boot_disk": [{ "initialize_params": [{ "size": 100, "type": "pd-balanced" }] }],
+            "labels": { "env": "production", "region": "eu" }
+          }
+        }
+      },
+      {
+        "address": "module.gcp_unsupported.google_vertex_ai_featurestore.ml_features",
+        "type": "google_vertex_ai_featurestore",
+        "provider_name": "registry.terraform.io/hashicorp/google",
+        "change": {
+          "actions": ["create"],
+          "before": null,
+          "after": {
+            "name": "ml-feature-store",
+            "region": "us-central1",
+            "labels": { "team": "ml" }
+          }
+        }
+      }
+    ]
+  }
+}

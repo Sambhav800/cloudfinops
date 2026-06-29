@@ -20,6 +20,8 @@ from ..architecture.aws_renderers import (
     render_vpc_detail,
 )
 from ..architecture.aws_topology import build_region_topology
+from ..architecture.azure_topology import build_region_topology as build_azure_region_topology
+from ..architecture.gcp_topology import build_region_topology as build_gcp_region_topology
 from ..architecture.contracts import (
     ChangeItem,
     CoverageReport,
@@ -1689,6 +1691,30 @@ async def get_architecture_graph(
                 permission_alerts=permission_alerts,
             )
             regions_result.append(region_result)
+    elif provider == "azure":
+        for target_region in target_regions:
+            topology = build_azure_region_topology(resources, region=target_region)
+            region_resources = [resource for resource in resources if _resource_in_region(resource, target_region, provider)]
+            region_result = build_region_graph_result(
+                topology=topology,
+                resources=region_resources,
+                views_requested=view,
+                vpc_id=vpc_id,
+                permission_alerts=permission_alerts,
+            )
+            regions_result.append(region_result)
+    elif provider == "gcp":
+        for target_region in target_regions:
+            topology = build_gcp_region_topology(resources, region=target_region)
+            region_resources = [resource for resource in resources if _resource_in_region(resource, target_region, provider)]
+            region_result = build_region_graph_result(
+                topology=topology,
+                resources=region_resources,
+                views_requested=view,
+                vpc_id=vpc_id,
+                permission_alerts=permission_alerts,
+            )
+            regions_result.append(region_result)
     else:
         for target_region in target_regions:
             regions_result.append(
@@ -1759,8 +1785,14 @@ async def generate_provider_proposed_architecture(
     if not resources:
         raise HTTPException(status_code=404, detail="No resources found. Run a scan first.")
 
-    if provider == "aws":
-        topology = build_region_topology(resources, region=region)
+    topology_builder = {
+        "aws": build_region_topology,
+        "azure": build_azure_region_topology,
+        "gcp": build_gcp_region_topology,
+    }.get(provider)
+
+    if topology_builder:
+        topology = topology_builder(resources, region=region)
         if topology.resource_count == 0:
             raise HTTPException(status_code=404, detail=f"No resources found in region {region}")
 
@@ -1783,3 +1815,70 @@ async def generate_provider_proposed_architecture(
         mode=mode,
     )
     return generic_result.to_dict()
+
+
+@router.post("/{provider}/report")
+async def generate_architecture_report_endpoint(
+    provider: str,
+    integration_id: str,
+    region: str,
+    user: ClerkUser = Depends(get_current_user),
+    db: MongoDBClient = Depends(get_db_client),
+):
+    """
+    Generate a professional AI-powered architecture report.
+    Returns structured markdown suitable for PDF rendering on the frontend.
+    """
+    provider = _normalize_provider(provider)
+
+    integration = await db.get_integration(integration_id, user.id)
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+
+    integration_provider = str(integration.get("provider", "")).lower()
+    if integration_provider != provider:
+        raise HTTPException(status_code=400, detail="Integration provider mismatch.")
+
+    resources = await db.get_resources_for_integration(user.id, integration_id)
+    if not resources:
+        raise HTTPException(status_code=404, detail="No resources found. Run a scan first.")
+
+    # Build graph data to pass to report generator
+    topology_builder = {
+        "aws": build_region_topology,
+        "azure": build_azure_region_topology,
+        "gcp": build_gcp_region_topology,
+    }.get(provider, build_region_topology)
+
+    topology = topology_builder(resources, region=region)
+    region_resources = [r for r in resources if _resource_in_region(r, region, provider)]
+    graph_result = build_region_graph_result(
+        topology=topology,
+        resources=region_resources,
+        views_requested="topology_summary",
+        vpc_id=None,
+        permission_alerts=[],
+    )
+
+    view_data = graph_result.views.get("topology_summary")
+    mermaid_code = view_data.mermaid if view_data else ""
+    nodes = [n.to_dict() for n in (view_data.graph.nodes if view_data else [])]
+    coverage = graph_result.coverage.to_dict()
+    warnings = coverage.get("warnings", [])
+
+    from ..architecture.report_generator import generate_architecture_report
+
+    result = await generate_architecture_report(
+        provider=provider,
+        integration_name=integration.get("name") or f"{provider.upper()} Integration",
+        region=region,
+        mermaid_code=mermaid_code,
+        nodes=nodes,
+        coverage=coverage,
+        warnings=warnings,
+    )
+
+    if result.get("status") == "error":
+        raise HTTPException(status_code=500, detail=result.get("message", "Report generation failed"))
+
+    return result

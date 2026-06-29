@@ -151,12 +151,15 @@ export function formatInrCurrency(
     const amount = normalizeNumber(value);
     const defaultFractionDigits = Math.abs(amount) >= 1000 ? 0 : 2;
 
+    const maxFrac = options.maximumFractionDigits ?? defaultFractionDigits;
+    const minFrac = Math.min(options.minimumFractionDigits ?? defaultFractionDigits, maxFrac);
+
     return new Intl.NumberFormat(DISPLAY_LOCALE, {
         style: "currency",
         currency: DISPLAY_CURRENCY,
-        minimumFractionDigits: defaultFractionDigits,
-        maximumFractionDigits: defaultFractionDigits,
         ...options,
+        minimumFractionDigits: minFrac,
+        maximumFractionDigits: maxFrac,
     }).format(amount);
 }
 

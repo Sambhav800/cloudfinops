@@ -57,10 +57,10 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
     def _get_client_key(self, request: Request) -> str:
         auth_header = request.headers.get("authorization") or ""
         if auth_header.lower().startswith("bearer "):
-            import jose.jwt as jwt_lib
+            import jwt as pyjwt
             try:
                 token = auth_header[7:].strip()
-                payload = jwt_lib.get_unverified_claims(token)
+                payload = pyjwt.decode(token, options={"verify_signature": False})
                 user_id = payload.get("sub")
                 if user_id:
                     return f"user:{user_id}"

@@ -1,6 +1,6 @@
 'use server';
 
-import { getArchitecture, getArchitectureGraph, generateProposedArchitecture } from '@/lib/api';
+import { getArchitecture, getArchitectureGraph, generateProposedArchitecture, generateArchitectureReport } from '@/lib/api';
 import type { GraphResponse, ProposedResult, ProposedMode } from '@/lib/architecture-types';
 
 // ---------------------------------------------------------------------------
@@ -54,4 +54,32 @@ export async function generateProposedAction(
     }
 
     return { data: result.data as ProposedResult, error: null };
+}
+
+// ---------------------------------------------------------------------------
+// Architecture Report Generation (AI-powered PDF export)
+// ---------------------------------------------------------------------------
+
+export type ArchitectureReportResult = {
+    status: string;
+    report_markdown: string;
+    title: string;
+    generated_at: string;
+    provider: string;
+    region: string;
+    integration_name: string;
+};
+
+export async function generateReportAction(
+    integrationId: string,
+    provider: string,
+    region: string,
+): Promise<{ data: ArchitectureReportResult | null; error: string | null }> {
+    const result = await generateArchitectureReport(integrationId, provider, region);
+
+    if ('error' in result) {
+        return { data: null, error: result.error.detail };
+    }
+
+    return { data: result.data as ArchitectureReportResult, error: null };
 }

@@ -644,6 +644,76 @@ class GCPScanner:
                             region_from_zone = "-".join(zone_name.split("-")[:-1]) if zone_name else ""
                             carbon += estimate_monthly_carbon_kg("gcp", machine_type_short, region_from_zone)
 
+                        # Extract network/subnet for architecture topology
+                        instance_network = None
+                        instance_subnet = None
+                        try:
+                            if instance.network_interfaces:
+                                nic = instance.network_interfaces[0]
+                                if nic.network:
+                                    instance_network = nic.network.split("/")[-1] if "/" in nic.network else nic.network
+                                if nic.subnetwork:
+                                    instance_subnet = nic.subnetwork.split("/")[-1] if "/" in nic.subnetwork else nic.subnetwork
+                        except Exception:
+                            pass
+
+                        # GPU detection (A2/G2/A3 machine types + guest accelerators)
+                        from ..core.gpu_specs import (
+                            GCP_GPU_MACHINE_PREFIXES, GCP_GPU_SPECS,
+                            GCP_ACCELERATOR_SPECS, is_gpu_instance_type,
+                        )
+                        instance_metadata = {
+                            "machine_type": machine_type_url.split("/")[-1] if "/" in machine_type_url else machine_type_url,
+                            "status": instance.status,
+                            "zone": zone_name,
+                            "project_id": self.project_id,
+                            "global_name": f"//compute.googleapis.com/projects/{self.project_id}/zones/{zone_name}/instances/{instance.name}",
+                            "cost_source": COST_SOURCE_BILLING_UNAVAILABLE,
+                            "network": instance_network,
+                            "subnet": instance_subnet,
+                        }
+
+                        mt_short = machine_type_url.split("/")[-1] if machine_type_url else ""
+                        is_gpu_by_type = is_gpu_instance_type(mt_short, provider="gcp")
+                        guest_accels = list(instance.guest_accelerators) if hasattr(instance, "guest_accelerators") and instance.guest_accelerators else []
+
+                        if is_gpu_by_type or guest_accels:
+                            instance_metadata["is_gpu_instance"] = True
+                            instance_metadata["instance_type"] = mt_short
+                            if is_gpu_by_type:
+                                spec = GCP_GPU_SPECS.get(mt_short.lower())
+                                if spec:
+                                    instance_metadata["gpu_type"] = f"{spec.gpu_count}× {spec.gpu_model}"
+                                    instance_metadata["gpu_count"] = spec.gpu_count
+                                    instance_metadata["supports_mig"] = spec.supports_mig
+                                    instance_metadata["gpu_memory_gb"] = spec.gpu_memory_gb
+                                    instance_metadata["gpu_architecture"] = spec.architecture
+                                    if spec.supports_mig:
+                                        instance_metadata["gpu_optimization_insight"] = (
+                                            f"MIG-capable {spec.gpu_model} on GCP. "
+                                            f"Partition each GPU into up to {spec.mig_slices_per_gpu} slices."
+                                        )
+                                    else:
+                                        instance_metadata["gpu_optimization_insight"] = (
+                                            f"{spec.gpu_model} GPU detected. Compare cost vs. specialized clouds."
+                                        )
+                            elif guest_accels:
+                                accel = guest_accels[0]
+                                accel_type_full = accel.accelerator_type if hasattr(accel, "accelerator_type") else ""
+                                accel_type = accel_type_full.split("/")[-1] if "/" in accel_type_full else accel_type_full
+                                accel_count = accel.accelerator_count if hasattr(accel, "accelerator_count") else 1
+                                accel_spec = GCP_ACCELERATOR_SPECS.get(accel_type, {})
+                                gpu_model = accel_spec.get("gpu_model", accel_type)
+                                instance_metadata["gpu_type"] = f"{accel_count}× {gpu_model}"
+                                instance_metadata["gpu_count"] = accel_count
+                                instance_metadata["supports_mig"] = accel_spec.get("supports_mig", False)
+                                instance_metadata["gpu_memory_gb"] = accel_spec.get("gpu_memory_gb", 0) * accel_count
+                                instance_metadata["gpu_architecture"] = accel_spec.get("architecture", "Unknown")
+                                instance_metadata["gpu_optimization_insight"] = (
+                                    f"Attached {accel_count}× {gpu_model} accelerator. "
+                                    "Consider dedicated GPU machine types (A2/G2) for better price-performance."
+                                )
+
                         resources.append(ScannedResource(
                             resource_name=instance.name,
                             service_type="GCP Compute Instance",
@@ -652,14 +722,7 @@ class GCPScanner:
                             region=zone_name,
                             region_compliance=_region_compliance(zone_name),
                             cloud_resource_id=resource_id,
-                            metadata={
-                                "machine_type": machine_type_url.split("/")[-1] if "/" in machine_type_url else machine_type_url,
-                                "status": instance.status,
-                                "zone": zone_name,
-                                "project_id": self.project_id,
-                                "global_name": f"//compute.googleapis.com/projects/{self.project_id}/zones/{zone_name}/instances/{instance.name}",
-                                "cost_source": COST_SOURCE_BILLING_UNAVAILABLE,
-                            }
+                            metadata=instance_metadata,
                         ))
 
             except Exception as e:

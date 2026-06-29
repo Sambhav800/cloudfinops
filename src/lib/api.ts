@@ -7,6 +7,18 @@ import {
 } from '@/app/api/_shared/backend-auth';
 import { BACKEND_URL } from '@/lib/config';
 
+const IS_DEV = process.env.NODE_ENV === "development";
+function devLog(...args: unknown[]) { if (IS_DEV) console.log(...args); }  // eslint-disable-line no-console
+function devError(...args: unknown[]) { if (IS_DEV) console.error(...args); }  // eslint-disable-line no-console
+
+const _INTERNAL_PATTERNS = /\b(s3:\/\/|gs:\/\/|\/subscriptions\/|\/resourceGroups\/|mongo|ObjectId|Traceback|File ")/i;
+function sanitizeErrorMessage(raw: string): string {
+    if (_INTERNAL_PATTERNS.test(raw)) {
+        return "An internal error occurred. Please try again or contact support.";
+    }
+    return raw;
+}
+
 function isLoopbackBackendUrl(value: string): boolean {
     try {
         const hostname = new URL(value).hostname.toLowerCase();
@@ -591,7 +603,7 @@ async function getBackendAuthHeaders(): Promise<Record<string, string> | null> {
         return buildBackendAuthHeaders(BACKEND_URL, authContext);
     } catch {
         if (process.env.NODE_ENV === "development") {
-            console.error("Failed to get auth headers");
+            devError("Failed to get auth headers");
         }
     }
 
@@ -628,13 +640,13 @@ async function getBackendJson<T>(
 
         if (!response.ok) {
             const errorText = await response.text().catch(() => "");
-            console.error(`[API] Backend request failed (${response.status}) for ${path}: ${errorText}`);
+            devError(`[API] Backend request failed (${response.status}) for ${path}: ${errorText}`);
             return null;
         }
 
         return await response.json() as T;
     } catch (error) {
-        console.error(`[API] Failed to fetch backend path ${path}:`, error);
+        devError(`[API] Failed to fetch backend path ${path}:`, error);
         return null;
     }
 }
@@ -674,8 +686,8 @@ async function postBackendJson<T>(
                 }
             }
 
-            console.error(`[API] Backend POST failed (${response.status}) for ${path}: ${errorMessage}`);
-            return { data: null, error: errorMessage, status: response.status };
+            devError(`[API] Backend POST failed (${response.status}) for ${path}: ${errorMessage}`);
+            return { data: null, error: sanitizeErrorMessage(errorMessage), status: response.status };
         }
 
         return {
@@ -684,7 +696,7 @@ async function postBackendJson<T>(
             status: response.status,
         };
     } catch (error) {
-        console.error(`[API] Failed to POST backend path ${path}:`, error);
+        devError(`[API] Failed to POST backend path ${path}:`, error);
         return { data: null, error: "Failed to reach backend service", status: 500 };
     }
 }
@@ -722,10 +734,10 @@ async function deleteBackendJson(
             }
         }
 
-        console.error(`[API] Backend DELETE failed (${response.status}) for ${path}: ${errorMessage}`);
-        return { error: errorMessage, status: response.status };
+        devError(`[API] Backend DELETE failed (${response.status}) for ${path}: ${errorMessage}`);
+        return { error: sanitizeErrorMessage(errorMessage), status: response.status };
     } catch (error) {
-        console.error(`[API] Failed to DELETE backend path ${path}:`, error);
+        devError(`[API] Failed to DELETE backend path ${path}:`, error);
         return { error: "Failed to reach backend service", status: 500 };
     }
 }
@@ -764,7 +776,7 @@ export async function triggerBackendScan(
         throw new Error('Unauthorized: No Clerk token available for backend scan');
     }
 
-    console.log(`[API] Triggering scan for ${integrationId} on ${BACKEND_URL}`);
+    devLog(`[API] Triggering scan for ${integrationId} on ${BACKEND_URL}`);
 
     try {
         const response = await fetchWithBackendAuthFallback(fetch, scanUrl, {
@@ -775,15 +787,15 @@ export async function triggerBackendScan(
 
         if (!response.ok) {
             const errorText = await response.text();
-            console.error(`[API] Backend scan failed (${response.status}): ${errorText}`);
+            devError(`[API] Backend scan failed (${response.status}): ${errorText}`);
             throw new Error(`Backend scan failed: ${response.status} ${errorText}`);
         }
 
         const data = await response.json();
-        console.log(`[API] Scan triggered:`, data);
+        devLog(`[API] Scan triggered:`, data);
         return data;
     } catch (error) {
-        console.error('[API] Failed to trigger backend scan:', error);
+        devError('[API] Failed to trigger backend scan:', error);
         throw error;
     }
 }
@@ -886,7 +898,7 @@ export async function getBackendIntegrations(): Promise<BackendIntegration[] | n
 
         return await response.json();
     } catch (error) {
-        console.error("Failed to fetch backend integrations:", error);
+        devError("Failed to fetch backend integrations:", error);
         return null;
     }
 }
@@ -1148,8 +1160,8 @@ export async function estimateTerraformPlan(plan: Record<string, unknown>, filen
                 }
             }
 
-            console.error(`[API] Backend simulator estimate failed (${response.status}): ${errorMessage}`);
-            return { data: null, error: errorMessage };
+            devError(`[API] Backend simulator estimate failed (${response.status}): ${errorMessage}`);
+            return { data: null, error: sanitizeErrorMessage(errorMessage) };
         }
 
         return {
@@ -1157,7 +1169,7 @@ export async function estimateTerraformPlan(plan: Record<string, unknown>, filen
             error: null,
         };
     } catch (error) {
-        console.error("[API] Failed to estimate Terraform plan:", error);
+        devError("[API] Failed to estimate Terraform plan:", error);
         return { data: null, error: "Failed to reach backend service" };
     }
 }
@@ -1189,13 +1201,13 @@ export async function getArchitecture(integrationId: string, region?: string, vp
         });
 
         if (!response.ok) {
-            console.error(`Failed to fetch architecture: ${response.status}`);
+            devError(`Failed to fetch architecture: ${response.status}`);
             return null;
         }
 
         return await response.json();
     } catch (error) {
-        console.error('Failed to fetch backend architecture:', error);
+        devError('Failed to fetch backend architecture:', error);
         return null;
     }
 }
@@ -1239,13 +1251,13 @@ export async function getArchitectureGraph(
 
         if (!response.ok) {
             const errorText = await response.text();
-            console.error(`[API] Graph fetch failed (${response.status}): ${errorText}`);
+            devError(`[API] Graph fetch failed (${response.status}): ${errorText}`);
             return { error: { status: response.status, detail: errorText } };
         }
 
         return { data: await response.json() };
     } catch (error) {
-        console.error('[API] Failed to fetch architecture graph:', error);
+        devError('[API] Failed to fetch architecture graph:', error);
         return { error: { status: 500, detail: String(error) } };
     }
 }
@@ -1293,13 +1305,58 @@ export async function generateProposedArchitecture(
 
         if (!response.ok) {
             const errorText = await response.text();
-            console.error(`[API] Proposed generation failed (${response.status}): ${errorText}`);
+            devError(`[API] Proposed generation failed (${response.status}): ${errorText}`);
             return { error: { status: response.status, detail: errorText } };
         }
 
         return { data: await response.json() };
     } catch (error) {
-        console.error('[API] Failed to generate proposed architecture:', error);
+        devError('[API] Failed to generate proposed architecture:', error);
+        return { error: { status: 500, detail: String(error) } };
+    }
+}
+
+export async function generateArchitectureReport(
+    integrationId: string,
+    provider: string,
+    region: string,
+): Promise<{ data: unknown } | { error: { status: number; detail: string } }> {
+    const headers = await getBackendAuthHeaders();
+    if (!headers) return { error: { status: 401, detail: 'Unauthorized' } };
+
+    let architectureProvider: ArchitectureProvider;
+    try {
+        architectureProvider = normalizeArchitectureProvider(provider);
+    } catch (error) {
+        return {
+            error: {
+                status: 400,
+                detail: error instanceof Error ? error.message : "Invalid architecture provider",
+            },
+        };
+    }
+
+    try {
+        const url = new URL(`${BACKEND_URL}/api/architecture/${architectureProvider}/report`);
+        url.searchParams.set('integration_id', integrationId);
+        url.searchParams.set('region', region);
+
+        const response = await fetch(url.toString(), {
+            method: 'POST',
+            headers: {
+                ...headers,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({}),
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            return { error: { status: response.status, detail: errorText } };
+        }
+
+        return { data: await response.json() };
+    } catch (error) {
         return { error: { status: 500, detail: String(error) } };
     }
 }

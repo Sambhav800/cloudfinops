@@ -14,10 +14,15 @@ import {
     ChevronUp,
     Terminal,
     ExternalLink,
+    Globe,
 } from "lucide-react";
 
 import { buildBackendAuthHeaders } from "@/app/api/_shared/fetch-with-backend-auth-fallback";
 import { formatInrCurrency, toDisplayInrAmount } from "@/lib/resources/contract";
+import { GpuUtilizationChart } from "./components/gpu-utilization-chart";
+import { GpuCostForecast } from "./components/gpu-cost-forecast";
+import { GpuWorkloadBadges } from "./components/gpu-workload-badges";
+import { GpuHistoricalTrends } from "./components/gpu-historical-trends";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -32,6 +37,7 @@ type GpuResource = {
     monthly_cost: number;
     status: string;
     region: string;
+    provider?: string;
     gpu_memory_utilization_pct: number | null;
     gpu_sm_occupancy_pct: number | null;
     gpu_optimization_insight: string;
@@ -86,6 +92,7 @@ type GpuReport = {
     total_savings_available: number;
     annual_waste_if_unresolved: number;
     ai_narrative: string;
+    providers_detected?: string[];
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -152,6 +159,10 @@ export default function GpuIntelligencePage() {
     const [report, setReport] = useState<GpuReport | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [forecast, setForecast] = useState<any>(null);
+    const [workloads, setWorkloads] = useState<any[]>([]);
+    const [metricsHistory, setMetricsHistory] = useState<any[]>([]);
+    const [providerFilter, setProviderFilter] = useState<string | null>(null);
 
     useEffect(() => {
         const url = integrationId
@@ -192,6 +203,38 @@ export default function GpuIntelligencePage() {
 
         void loadData();
     }, [integrationId, getToken, userId]);
+
+    // Secondary data fetches (non-blocking)
+    useEffect(() => {
+        if (!report || report.gpu_resources.length === 0) return;
+
+        const fetchSecondary = async () => {
+            let token = await getToken();
+            if (!token) {
+                try { token = await getToken({ template: "default" }); } catch { token = null; }
+            }
+            const headers = buildBackendAuthHeaders(
+                new URL("/api/gpu/forecast", window.location.origin).toString(),
+                { token, userId: userId ?? null },
+            );
+
+            // Fetch forecast, workloads, and metrics in parallel
+            const [forecastResp, workloadsResp] = await Promise.allSettled([
+                fetch("/api/gpu/forecast", { headers }),
+                fetch("/api/gpu/workloads", { headers }),
+            ]);
+
+            if (forecastResp.status === "fulfilled" && forecastResp.value.ok) {
+                setForecast(await forecastResp.value.json());
+            }
+            if (workloadsResp.status === "fulfilled" && workloadsResp.value.ok) {
+                const data = await workloadsResp.value.json();
+                setWorkloads(data.workloads || []);
+            }
+        };
+
+        void fetchSecondary();
+    }, [report, getToken, userId]);
 
     if (loading) {
         return (
@@ -275,6 +318,33 @@ export default function GpuIntelligencePage() {
                 </div>
             </div>
 
+            {/* Multi-cloud provider filter */}
+            {report.providers_detected && report.providers_detected.length > 1 && (
+                <div className="flex items-center gap-2">
+                    <Globe className="h-4 w-4 text-slate-400" />
+                    <span className="text-sm text-slate-400">Filter:</span>
+                    <button
+                        onClick={() => setProviderFilter(null)}
+                        className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                            !providerFilter ? "bg-indigo-600 text-white" : "border border-white/10 text-slate-400 hover:text-white"
+                        }`}
+                    >
+                        All
+                    </button>
+                    {report.providers_detected.map((p) => (
+                        <button
+                            key={p}
+                            onClick={() => setProviderFilter(p)}
+                            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                                providerFilter === p ? "bg-indigo-600 text-white" : "border border-white/10 text-slate-400 hover:text-white"
+                            }`}
+                        >
+                            {p.toUpperCase()}
+                        </button>
+                    ))}
+                </div>
+            )}
+
             {/* AI Narrative */}
             {ai_narrative && (
                 <div className="rounded-xl border border-purple-500/20 bg-purple-500/5 p-5">
@@ -285,6 +355,22 @@ export default function GpuIntelligencePage() {
                     <p className="text-sm text-gray-300 leading-relaxed">{ai_narrative}</p>
                 </div>
             )}
+
+            {/* Real-time utilization + Cost Forecast */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <GpuUtilizationChart
+                    wsUrl={typeof window !== "undefined" ? `ws://${window.location.hostname}:8000` : ""}
+                    userId={userId || ""}
+                    token=""
+                />
+                <GpuCostForecast forecast={forecast} />
+            </div>
+
+            {/* Workload Classification */}
+            <GpuWorkloadBadges workloads={workloads} />
+
+            {/* Historical Trends */}
+            <GpuHistoricalTrends data={metricsHistory} />
 
             {/* Ghost GPU Alerts */}
             {ghost_gpus.length > 0 && (

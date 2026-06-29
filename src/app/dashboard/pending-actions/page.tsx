@@ -23,8 +23,8 @@ export default async function PendingActionsPage() {
     return (
         <div className="min-h-screen">
             <div className="px-6 py-4">
-                <h1 className="text-2xl font-bold text-white">Pending Actions</h1>
-                <p className="text-sm text-gray-400">{`${pendingCount} actions awaiting your approval`}</p>
+                <h1 className="text-2xl font-bold text-white">Recommendations</h1>
+                <p className="text-sm text-gray-400">{`${pendingCount} actions awaiting approval — sorted by priority`}</p>
             </div>
             <div className="space-y-4">
                 {loadError && <ErrorBanner message={loadError} />}

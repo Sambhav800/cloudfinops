@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
 import { AlertCircle, Loader2 } from 'lucide-react';
 
@@ -90,7 +91,8 @@ function buildSvgStyles(palette: Palette, lineColor: string): string {
     return `
 <style>
     .cloudfinops-architecture-svg {
-        max-width: 100%;
+        width: max-content;
+        min-width: 100%;
         height: auto;
     }
 
@@ -214,7 +216,8 @@ export function ArchitectureMermaid({
                 const { svg } = await mermaid.render(svgId, mermaidCode);
 
                 if (isMounted && containerRef.current) {
-                    containerRef.current.innerHTML = injectSvgStyles(svg, palette, lineColor);
+                    const styledSvg = injectSvgStyles(svg, palette, lineColor);
+                    containerRef.current.innerHTML = DOMPurify.sanitize(styledSvg, { USE_PROFILES: { svg: true, svgFilters: true }, ADD_TAGS: ['use'] });
                     setRendering(false);
                 }
             } catch (err: unknown) {
@@ -247,7 +250,7 @@ export function ArchitectureMermaid({
     }
 
     return (
-        <div className="relative flex min-h-[460px] w-full items-center justify-center overflow-auto rounded-2xl border border-white/10 bg-[linear-gradient(160deg,rgba(15,23,42,0.92),rgba(2,6,23,0.96))] p-6 shadow-[0_28px_70px_rgba(2,6,23,0.45)]">
+        <div className="relative w-full overflow-auto rounded-2xl border border-white/10 bg-[linear-gradient(160deg,rgba(15,23,42,0.92),rgba(2,6,23,0.96))] p-6 shadow-[0_28px_70px_rgba(2,6,23,0.45)]">
             <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.06),transparent_30%),radial-gradient(circle_at_bottom_right,rgba(34,211,238,0.1),transparent_32%)]" />
 
             {rendering ? (
@@ -259,7 +262,7 @@ export function ArchitectureMermaid({
 
             <div
                 ref={containerRef}
-                className="relative z-[1] flex w-full items-center justify-center overflow-visible"
+                className="relative z-[1] min-h-[400px] w-max min-w-full"
             />
         </div>
     );

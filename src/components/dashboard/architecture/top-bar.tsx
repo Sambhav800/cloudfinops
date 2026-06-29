@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Cloud, Clock, Shield, ChevronDown, X } from 'lucide-react';
+import { Cloud, Clock, Shield, ChevronDown, X, FileText, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { CoverageReport } from '@/lib/architecture-types';
 
@@ -13,6 +13,8 @@ interface Props {
     activeRegion: string;
     onRegionChange: (region: string) => void;
     coverage: CoverageReport | null;
+    onExportReport?: () => void;
+    exportingReport?: boolean;
 }
 
 export function TopBar({
@@ -23,6 +25,8 @@ export function TopBar({
     activeRegion,
     onRegionChange,
     coverage,
+    onExportReport,
+    exportingReport,
 }: Props) {
     const [showCoverage, setShowCoverage] = useState(false);
 
@@ -74,6 +78,22 @@ export function TopBar({
                         <Clock className="w-3.5 h-3.5" />
                         <span>Last scan: {new Date(lastScan).toLocaleString()}</span>
                     </div>
+                )}
+
+                {/* Export Report Button */}
+                {onExportReport && (
+                    <button
+                        onClick={onExportReport}
+                        disabled={exportingReport}
+                        className="flex items-center gap-1.5 rounded-lg border border-indigo-500/30 bg-indigo-600/20 px-3 py-1.5 text-xs font-medium text-indigo-400 transition-colors hover:bg-indigo-600/30 disabled:opacity-50"
+                    >
+                        {exportingReport ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                            <FileText className="h-3.5 w-3.5" />
+                        )}
+                        {exportingReport ? 'Generating...' : 'Export Report'}
+                    </button>
                 )}
 
                 {/* Coverage Badge */}

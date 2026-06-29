@@ -39,8 +39,7 @@ xlrd>=2.0.1
 pdfplumber>=0.11.4
 pdfplumber>=0.11.4
 
-# Security
-python-jose[cryptography]>=3.3.0
+# Security (PyJWT listed above replaces python-jose — CVE-2024-33664)
 
 # Kubernetes
 kubernetes>=29.0.0

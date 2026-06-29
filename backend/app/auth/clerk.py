@@ -6,7 +6,8 @@ Verifies JWT tokens issued by Clerk and extracts user information.
 import httpx
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import jwt, JWTError
+import jwt
+from jwt.exceptions import PyJWTError as JWTError
 from pydantic import BaseModel
 from typing import Any, Optional
 import logging
@@ -35,13 +36,15 @@ class ClerkJWKS:
         self.last_fetch: float = 0
         self.cache_duration: int = 3600  # 1 hour
     
-    async def get_key(self, kid: str, settings: Settings) -> Optional[dict]:
+    async def get_key(self, kid: str, settings: Settings):
         """Get public key by key ID, fetching JWKS if needed."""
-        # Refresh cache if expired
         if time.time() - self.last_fetch > self.cache_duration:
             await self._fetch_jwks(settings)
-        
-        return self.keys.get(kid)
+
+        jwk_data = self.keys.get(kid)
+        if not jwk_data:
+            return None
+        return jwt.algorithms.RSAAlgorithm.from_jwk(jwk_data)
     
     async def _fetch_jwks(self, settings: Settings):
         """Fetch JWKS from Clerk."""
@@ -126,12 +129,11 @@ async def verify_clerk_token(token: str, settings: Settings) -> ClerkUser:
                 detail="Invalid token: unknown key"
             )
         
-        # Verify and decode token
         payload = jwt.decode(
             token,
             public_key,
             algorithms=["RS256"],
-            options={"verify_aud": False}  # Clerk doesn't always set audience
+            options={"verify_aud": False},
         )
         
         user_id = payload.get("sub")
@@ -150,9 +152,10 @@ async def verify_clerk_token(token: str, settings: Settings) -> ClerkUser:
         )
         
     except JWTError as e:
+        logger.debug("JWT verification failed: %s", e)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {str(e)}"
+            detail="Invalid or expired token"
         )
 
 

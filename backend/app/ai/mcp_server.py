@@ -462,6 +462,20 @@ async def get_gpu_intelligence(user_id: str) -> dict:
     return summary
 
 @app.tool()
+async def get_api_intelligence(user_id: str) -> dict:
+    """
+    Get API infrastructure intelligence: ghost APIs (idle/orphaned), cache waste,
+    shadow APIs (compliance risk), cost-per-request ranking, and throttle analysis.
+    Use for ALL questions about API Gateways, API Management, endpoints, and API costs.
+    """
+    from ..core.api_intelligence import ApiIntelligenceService
+    db = get_db_client()
+    resources = await db.get_resources(user_id)
+    service = ApiIntelligenceService()
+    return service.get_api_summary(resources)
+
+
+@app.tool()
 async def get_multicloud_comparison(user_id: str) -> dict:
     """
     Get a multi-cloud cost projection comparing AWS, GCP, and Azure for the user's live infrastructure.

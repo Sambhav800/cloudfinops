@@ -313,7 +313,8 @@ class AWSScanner:
                 self._scan_dhcp_options(region),
                 self._scan_key_pairs(region),
                 self._scan_rds(region),
-                self._scan_lambda(region)
+                self._scan_lambda(region),
+                self._scan_api_gateway(region),
             ]
             if idx == 0:
                 tasks.append(self._scan_s3())
@@ -359,10 +360,15 @@ class AWSScanner:
             specific_resources.extend(lambda_res)
             waste_list.extend(lambda_waste)
             potential_savings += lambda_sav
-            
+
+            apigw_res, apigw_waste, apigw_sav = results[13]
+            specific_resources.extend(apigw_res)
+            waste_list.extend(apigw_waste)
+            potential_savings += apigw_sav
+
             # Global
             if idx == 0:
-                s3_res, s3_waste, s3_sav = results[13]
+                s3_res, s3_waste, s3_sav = results[14]
                 specific_resources.extend(s3_res)
                 waste_list.extend(s3_waste)
                 potential_savings += s3_sav
@@ -1834,6 +1840,247 @@ class AWSScanner:
                 
             return resources, waste, savings
             
+        return await loop.run_in_executor(self.executor, scan)
+
+    async def _scan_api_gateway(self, region: str) -> tuple:
+        """Scan API Gateway REST and HTTP APIs for idle/ghost detection."""
+        loop = asyncio.get_event_loop()
+
+        def scan():
+            resources = []
+            waste = []
+            savings = 0.0
+
+            # --- REST APIs (apigateway) ---
+            try:
+                client = self._get_client('apigateway', region)
+                paginator = client.get_paginator('get_rest_apis')
+                cw_client = self._get_client('cloudwatch', region)
+
+                for page in paginator.paginate():
+                    for api in page.get('items', []):
+                        api_id = api.get('id', '')
+                        api_name = api.get('name', api_id)
+                        endpoint_type = (api.get('endpointConfiguration', {}).get('types', ['REGIONAL']) or ['REGIONAL'])[0]
+                        created_date = str(api.get('createdDate', ''))
+
+                        try:
+                            stages_resp = client.get_stages(restApiId=api_id)
+                            stages = stages_resp.get('item', [])
+                        except Exception:
+                            stages = []
+
+                        if not stages:
+                            # API with no stages — likely orphaned
+                            arn = f"arn:aws:apigateway:{region}::/restapis/{api_id}"
+                            resources.append(ScannedResource(
+                                resource_name=api_name,
+                                service_type='AWS API Gateway',
+                                cost=0.0,
+                                status='Zombie',
+                                region=region,
+                                region_compliance='compliant' if region in APPROVED_REGIONS else 'shadow_it',
+                                created_by='Unknown',
+                                metadata={
+                                    'api_id': api_id,
+                                    'api_name': api_name,
+                                    'api_type': 'REST',
+                                    'stage_name': '',
+                                    'endpoint_type': endpoint_type,
+                                    'invocations_7d': 0,
+                                    'created_date': created_date,
+                                    'arn': arn,
+                                    'is_api_resource': True,
+                                    'route_count': 0,
+                                },
+                                cloud_resource_id=f"apigw-{api_id}-nostage",
+                            ))
+                            waste.append({'category_name': 'Orphaned API Gateway', 'value': 0})
+                            continue
+
+                        for stage in stages:
+                            stage_name = stage.get('stageName', 'unknown')
+                            stage_arn = f"arn:aws:apigateway:{region}::/restapis/{api_id}/stages/{stage_name}"
+                            cache_enabled = bool(stage.get('cacheClusterEnabled', False))
+                            cache_size = float(stage.get('cacheClusterSize', '0') or '0')
+
+                            # CloudWatch metrics (7 days)
+                            invocations_7d = 0
+                            error_4xx = 0
+                            error_5xx = 0
+                            latency_p99 = 0
+                            cache_hits = 0
+                            cache_misses = 0
+
+                            try:
+                                from datetime import datetime, timedelta
+                                end_time = datetime.utcnow()
+                                start_time = end_time - timedelta(days=7)
+                                dimensions = [
+                                    {'Name': 'ApiName', 'Value': api_name},
+                                    {'Name': 'Stage', 'Value': stage_name},
+                                ]
+
+                                for metric_name, target in [
+                                    ('Count', 'invocations'),
+                                    ('4XXError', '4xx'),
+                                    ('5XXError', '5xx'),
+                                ]:
+                                    resp = cw_client.get_metric_statistics(
+                                        Namespace='AWS/ApiGateway',
+                                        MetricName=metric_name,
+                                        Dimensions=dimensions,
+                                        StartTime=start_time,
+                                        EndTime=end_time,
+                                        Period=604800,
+                                        Statistics=['Sum'],
+                                    )
+                                    dps = resp.get('Datapoints', [])
+                                    total = sum(dp.get('Sum', 0) for dp in dps)
+                                    if target == 'invocations':
+                                        invocations_7d = int(total)
+                                    elif target == '4xx':
+                                        error_4xx = int(total)
+                                    elif target == '5xx':
+                                        error_5xx = int(total)
+
+                                # Latency p99
+                                resp = cw_client.get_metric_statistics(
+                                    Namespace='AWS/ApiGateway',
+                                    MetricName='Latency',
+                                    Dimensions=dimensions,
+                                    StartTime=start_time,
+                                    EndTime=end_time,
+                                    Period=604800,
+                                    ExtendedStatistics=['p99'],
+                                )
+                                dps = resp.get('Datapoints', [])
+                                if dps:
+                                    latency_p99 = dps[0].get('ExtendedStatistics', {}).get('p99', 0)
+
+                                # Cache metrics
+                                if cache_enabled:
+                                    for m, tgt in [('CacheHitCount', 'hits'), ('CacheMissCount', 'misses')]:
+                                        resp = cw_client.get_metric_statistics(
+                                            Namespace='AWS/ApiGateway',
+                                            MetricName=m,
+                                            Dimensions=dimensions,
+                                            StartTime=start_time,
+                                            EndTime=end_time,
+                                            Period=604800,
+                                            Statistics=['Sum'],
+                                        )
+                                        dps = resp.get('Datapoints', [])
+                                        val = sum(dp.get('Sum', 0) for dp in dps)
+                                        if tgt == 'hits':
+                                            cache_hits = int(val)
+                                        else:
+                                            cache_misses = int(val)
+                            except Exception:
+                                pass
+
+                            cache_hit_rate = None
+                            if cache_enabled and (cache_hits + cache_misses) > 0:
+                                cache_hit_rate = round((cache_hits / (cache_hits + cache_misses)) * 100, 2)
+
+                            error_rate_4xx = round((error_4xx / invocations_7d) * 100, 2) if invocations_7d > 0 else 0
+                            error_rate_5xx = round((error_5xx / invocations_7d) * 100, 2) if invocations_7d > 0 else 0
+
+                            # Determine status
+                            status = 'Active'
+                            waste_type = None
+                            if invocations_7d == 0:
+                                status = 'Zombie'
+                                waste_type = 'ghost_api'
+
+                            meta = {
+                                'api_id': api_id,
+                                'api_name': api_name,
+                                'api_type': 'REST',
+                                'stage_name': stage_name,
+                                'endpoint_type': endpoint_type,
+                                'invocations_7d': invocations_7d,
+                                'avg_daily_invocations': round(invocations_7d / 7, 1),
+                                'error_rate_4xx': error_rate_4xx,
+                                'error_rate_5xx': error_rate_5xx,
+                                'latency_p99_ms': round(latency_p99, 1),
+                                'cache_enabled': cache_enabled,
+                                'cache_hit_rate': cache_hit_rate,
+                                'cache_size_gb': cache_size,
+                                'throttle_burst_limit': stage.get('methodSettings', {}).get('*/*', {}).get('throttlingBurstLimit'),
+                                'throttle_rate_limit': stage.get('methodSettings', {}).get('*/*', {}).get('throttlingRateLimit'),
+                                'created_date': created_date,
+                                'arn': stage_arn,
+                                'is_api_resource': True,
+                            }
+
+                            resources.append(ScannedResource(
+                                resource_name=f"{api_name}/{stage_name}",
+                                service_type='AWS API Gateway',
+                                cost=0.0,
+                                status=status,
+                                region=region,
+                                region_compliance='compliant' if region in APPROVED_REGIONS else 'shadow_it',
+                                created_by='Unknown',
+                                metadata=meta,
+                                cloud_resource_id=f"apigw-{api_id}-{stage_name}",
+                            ))
+
+                            if status == 'Zombie':
+                                waste.append({'category_name': 'Ghost API Gateway', 'value': 0})
+
+            except Exception as e:
+                self._handle_scan_error("API Gateway REST", e, region)
+
+            # --- HTTP/WebSocket APIs (apigatewayv2) ---
+            try:
+                v2_client = self._get_client('apigatewayv2', region)
+                apis_resp = v2_client.get_apis()
+
+                for api in apis_resp.get('Items', []):
+                    api_id = api.get('ApiId', '')
+                    api_name = api.get('Name', api_id)
+                    protocol = api.get('ProtocolType', 'HTTP')
+
+                    try:
+                        stages_resp = v2_client.get_stages(ApiId=api_id)
+                        v2_stages = stages_resp.get('Items', [])
+                    except Exception:
+                        v2_stages = []
+
+                    for stage in v2_stages:
+                        stage_name = stage.get('StageName', '$default')
+                        stage_arn = f"arn:aws:apigateway:{region}::/apis/{api_id}/stages/{stage_name}"
+
+                        meta = {
+                            'api_id': api_id,
+                            'api_name': api_name,
+                            'api_type': protocol,
+                            'stage_name': stage_name,
+                            'endpoint_type': 'REGIONAL',
+                            'invocations_7d': -1,
+                            'created_date': str(api.get('CreatedDate', '')),
+                            'arn': stage_arn,
+                            'is_api_resource': True,
+                        }
+
+                        resources.append(ScannedResource(
+                            resource_name=f"{api_name}/{stage_name}",
+                            service_type='AWS API Gateway',
+                            cost=0.0,
+                            status='Active',
+                            region=region,
+                            region_compliance='compliant' if region in APPROVED_REGIONS else 'shadow_it',
+                            created_by='Unknown',
+                            metadata=meta,
+                            cloud_resource_id=f"apigw-v2-{api_id}-{stage_name}",
+                        ))
+
+            except Exception as e:
+                self._handle_scan_error("API Gateway HTTP/WS", e, region)
+
+            return resources, waste, savings
+
         return await loop.run_in_executor(self.executor, scan)
 
     # -------------------------------------------------------------------

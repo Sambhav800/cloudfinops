@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-    Bell,
     Bot,
     Calculator,
     CalendarClock,
@@ -27,6 +26,7 @@ import {
     ShieldCheck,
     Telescope,
     TrendingDown,
+    Webhook,
     X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -72,7 +72,7 @@ const navigationSections: NavSection[] = [
         items: [
             {
                 key: "savings",
-                name: "Savings",
+                name: "Recommendations",
                 href: "/dashboard/pending-actions",
                 icon: TrendingDown,
             },
@@ -104,8 +104,8 @@ const navigationSections: NavSection[] = [
                 activePrefixes: ["/dashboard/arbitrage"],
             },
             { key: "simulator", name: "Simulator", href: "/dashboard/simulator", icon: Calculator },
-            { key: "alerts", name: "Alerts", href: "/dashboard/alerts", icon: Bell },
             { key: "gpu", name: "GPU Intelligence", href: "/dashboard/gpu", icon: Cpu },
+            { key: "apis", name: "API Intelligence", href: "/dashboard/apis", icon: Webhook },
         ],
     },
 ];

@@ -49,6 +49,26 @@ def _shell_quote(value: Any) -> str:
     return shlex.quote(str(value or ""))
 
 
+_ALLOWED_CLI_PREFIXES = ("az ", "aws ", "gcloud ", "kubectl ", "# ")
+_DANGEROUS_SHELL_CHARS = (";", "&&", "||", "|", "`", "$(", "${", "\n", ">>", ">")
+
+
+def _sanitize_ai_command(script: str, provider: str) -> str:
+    """Validate AI-generated CLI output is safe before returning to user."""
+    script = script.strip()
+    if not script:
+        return f"# No command generated for {provider} resource"
+
+    for char in _DANGEROUS_SHELL_CHARS:
+        if char in script:
+            return f"# AI output contained unsafe characters — review manually:\n# {script.split(chr(10))[0][:120]}"
+
+    if not any(script.startswith(prefix) for prefix in _ALLOWED_CLI_PREFIXES):
+        return f"# AI output did not match expected CLI format — review manually:\n# {script[:120]}"
+
+    return script
+
+
 class FixScriptGenerator:
     """
     AI-powered fix script generator using Google Gemini.
@@ -123,18 +143,14 @@ Example for AWS volume: `aws ec2 delete-volume --volume-id vol-1234567890abcdef0
         try:
             response = await self.model.generate_content_async(prompt)
             script = response.text.strip()
-            
-            # Clean up the response (remove code block markers if present)
             script = script.replace("```bash", "").replace("```", "").strip()
-            
-            return script
+            return _sanitize_ai_command(script, provider)
         except Exception as e:
             logger.error(f"Gemini API error: {e}")
-            # Fallback to template-based generation
             return self._generate_fallback_command(
                 provider, service_type, resource_id, resource_name, region
             )
-    
+
     async def generate_resize_command(
         self,
         provider: str,
@@ -167,11 +183,11 @@ Generate ONLY the command to change the size/SKU. Include --yes or --force flags
             response = await self.model.generate_content_async(prompt)
             script = response.text.strip()
             script = script.replace("```bash", "").replace("```", "").strip()
-            return script
+            return _sanitize_ai_command(script, provider)
         except Exception as e:
             logger.error(f"Gemini API error: {e}")
-            return f"# Error generating resize command: {e}"
-    
+            return f"# Resize {resource_id} from {current_size} to {recommended_size} (AI unavailable)"
+
     async def generate_stop_command(
         self,
         provider: str,
@@ -204,7 +220,7 @@ Generate ONLY the command to stop/deallocate. For VMs, use deallocate to save co
             response = await self.model.generate_content_async(prompt)
             script = response.text.strip()
             script = script.replace("```bash", "").replace("```", "").strip()
-            return script
+            return _sanitize_ai_command(script, provider)
         except Exception as e:
             logger.error(f"Gemini API error: {e}")
             return self._generate_fallback_stop_command(

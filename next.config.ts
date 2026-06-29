@@ -26,7 +26,7 @@ const nextConfig: NextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: https: blob:",
               "font-src 'self' data:",
-              "connect-src 'self' https: wss:",
+              `connect-src 'self' ${process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000"} wss://${(() => { try { return new URL(process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000").host; } catch { return "127.0.0.1:8000"; } })()} https://*.clerk.accounts.dev https://*.clerk.dev https://api.clerk.com https://*.posthog.com`,
               "frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.dev",
               "frame-ancestors 'none'",
               "base-uri 'self'",
