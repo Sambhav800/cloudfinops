@@ -3796,3 +3796,236 @@ async def get_multicloud_comparison(
     except Exception as e:
         logger.error("Multi-cloud comparison failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="Multi-cloud comparison failed.")
+
+
+# ---------------------------------------------------------------------------
+# Public (unauthenticated) bill scan endpoint — lead-generation tool
+# ---------------------------------------------------------------------------
+
+import threading as _threading
+import time as _time
+from collections import defaultdict as _defaultdict
+
+_PUBLIC_SCAN_RATE_LIMIT = 5          # max requests
+_PUBLIC_SCAN_WINDOW_SECONDS = 3600   # per hour
+_PUBLIC_SCAN_MAX_BYTES = 20 * 1024 * 1024  # 20 MB
+_PUBLIC_SCAN_PARSE_TIMEOUT = 60.0    # seconds
+
+# Thread-safe in-memory rate limiter: ip -> list[timestamp]
+_public_scan_ip_log: dict[str, list[float]] = _defaultdict(list)
+_public_scan_lock = _threading.Lock()
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """Return True if the request is allowed, False if rate-limited."""
+    now = _time.time()
+    window_start = now - _PUBLIC_SCAN_WINDOW_SECONDS
+    with _public_scan_lock:
+        # Prune stale timestamps outside the current window
+        _public_scan_ip_log[ip] = [
+            ts for ts in _public_scan_ip_log[ip] if ts > window_start
+        ]
+        if len(_public_scan_ip_log[ip]) >= _PUBLIC_SCAN_RATE_LIMIT:
+            return False
+        _public_scan_ip_log[ip].append(now)
+    return True
+
+
+def _resolve_client_ip(request: Request) -> str:
+    """Extract real client IP, honouring X-Forwarded-For from the Next.js proxy."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if request.client:
+        return request.client.host
+    return "unknown"
+
+
+def _compute_waste_grade(savings_amount: float, total_spend: float) -> tuple[str, str]:
+    """Derive waste grade letter + label from savings-to-spend ratio."""
+    if total_spend <= 0:
+        return "C", "Unable to determine grade"
+    ratio = savings_amount / total_spend
+    if ratio < 0.05:
+        return "A", "Excellent — minimal waste detected"
+    if ratio < 0.15:
+        return "B", "Good — small optimisations available"
+    if ratio < 0.30:
+        return "C", "Moderate — significant savings on the table"
+    if ratio < 0.50:
+        return "D", "Poor — high waste detected"
+    return "F", "Critical — severe overspend detected"
+
+
+def _redact_and_build_teaser(raw: dict[str, Any], rows_parsed: int) -> dict[str, Any]:
+    """
+    Apply the spec §3 redaction map and return the public teaser payload.
+
+    Strips:
+    - evidence_lines / raw source strings
+    - how_to_fix arrays and remediation scripts
+    - complete cross-cloud tables
+    - resource IDs
+    """
+    total_spend = float(raw.get("total_spend") or 0)
+    savings_amount = float(raw.get("savings_amount") or raw.get("existing_credits_and_savings") or 0)
+    currency = str(raw.get("currency") or "USD").upper()
+    provider = str(raw.get("provider") or "generic").lower()
+    by_category: dict[str, float] = raw.get("by_category") or {}
+
+    waste_grade, waste_grade_label = _compute_waste_grade(savings_amount, total_spend)
+
+    # Savings range: ±20% band around the detected savings figure.
+    # If no existing savings detected, estimate conservatively from spend.
+    if savings_amount > 0:
+        savings_min = round(savings_amount * 0.8, 2)
+        savings_max = round(savings_amount * 1.2, 2)
+    else:
+        # Heuristic: 10–20% of spend is typically recoverable.
+        savings_min = round(total_spend * 0.10, 2)
+        savings_max = round(total_spend * 0.20, 2)
+
+    # Build top-3 redacted findings from raw_services
+    raw_services: list[dict[str, Any]] = raw.get("raw_services") or []
+    top_findings: list[dict[str, Any]] = []
+    for svc in raw_services[:3]:
+        service_name = str(svc.get("service") or svc.get("Service") or "Unknown Service")
+        cost = float(svc.get("cost") or svc.get("Cost") or 0)
+        category = str(svc.get("category") or "Other")
+
+        # Construct a generic, non-sensitive finding description.
+        what_we_found = (
+            f"{service_name} accounts for a significant portion of your bill. "
+            "Our analysis detected usage patterns that indicate potential optimisation opportunities. "
+            "Sign up to see specific resource IDs, utilisation metrics, and exact fix steps."
+        )
+
+        top_findings.append({
+            "service": service_name,
+            "what_we_found": what_we_found,
+            "category": category,
+            "estimated_impact": round(cost * 0.15, 2),  # conservative 15% waste estimate
+            # Fully redacted per spec §3
+            "how_to_fix": "SIGNUP_REQUIRED",
+            "evidence_lines": [],
+        })
+
+    return {
+        "provider_detected": provider,
+        "total_analyzed_spend": total_spend,
+        "currency": currency,
+        "by_category": by_category,
+        "waste_grade": waste_grade,
+        "waste_grade_label": waste_grade_label,
+        "estimated_monthly_savings_min": savings_min,
+        "estimated_monthly_savings_max": savings_max,
+        "top_findings_teaser": top_findings,
+        "remediation_status": "SIGNUP_REQUIRED",
+        "rows_parsed": rows_parsed,
+        # client_scripts key intentionally absent (fully redacted)
+    }
+
+
+@router.post("/scan/public-upload")
+async def public_bill_scan(
+    request: Request,
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """
+    Publicly accessible, unauthenticated processing endpoint for lead-gen scans.
+
+    - No auth required (bypasses Depends(get_current_user))
+    - Rate-limited: max 5 scans per hour per IP
+    - File processed in-memory only — never archived to GCS
+    - Redacted response per spec §3: no resource IDs, no fix steps, no scripts
+    """
+    from ..bill_parser.parser import parse_bill
+
+    # 1. Rate limiting
+    client_ip = _resolve_client_ip(request)
+    if not _check_rate_limit(client_ip):
+        logger.warning(
+            "Public scan rate limit exceeded for IP %s",
+            client_ip,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Free scan limit reached ({_PUBLIC_SCAN_RATE_LIMIT} scans per hour). "
+                "Please try again later or sign up for unlimited access."
+            ),
+            headers={"Retry-After": str(_PUBLIC_SCAN_WINDOW_SECONDS)},
+        )
+
+    # 2. File extension validation
+    filename = file.filename or "bill.csv"
+    extension = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    if extension not in {"csv", "xlsx", "xls", "pdf"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Only .csv, .xlsx, .xls, and .pdf files are supported.",
+        )
+
+    # 3. Size validation — read exactly up to limit + 1 byte to detect oversized files
+    content = await file.read(_PUBLIC_SCAN_MAX_BYTES + 1)
+    if len(content) > _PUBLIC_SCAN_MAX_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Free tier files must be under {_PUBLIC_SCAN_MAX_BYTES // (1024 * 1024)} MB.",
+        )
+
+    # 4. Parse the bill in-memory (non-blocking, with timeout)
+    try:
+        raw_analysis = await asyncio.wait_for(
+            asyncio.to_thread(parse_bill, content, filename),
+            timeout=_PUBLIC_SCAN_PARSE_TIMEOUT,
+        )
+    except asyncio.TimeoutError as exc:
+        logger.warning(
+            "Public scan parse timeout for IP=%s file=%s",
+            client_ip,
+            filename,
+        )
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "Bill parsing took too long. "
+                "Try uploading a CSV/Excel export, or a smaller text-based PDF."
+            ),
+        ) from exc
+    except ValueError as parse_err:
+        logger.warning(
+            "Public scan parse error for IP=%s file=%s: %s",
+            client_ip,
+            filename,
+            parse_err,
+        )
+        raise HTTPException(status_code=422, detail=str(parse_err)) from parse_err
+    except Exception as exc:
+        logger.error(
+            "Unexpected public scan error for IP=%s file=%s: %s",
+            client_ip,
+            filename,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred while processing your bill.",
+        ) from exc
+    finally:
+        # Explicitly delete the raw bytes buffer — privacy lifecycle.
+        del content
+
+    # 5. Apply redaction map and return teaser
+    rows_parsed = int(raw_analysis.get("rows_parsed") or 0)
+    redacted = _redact_and_build_teaser(raw_analysis, rows_parsed)
+    logger.info(
+        "Public scan complete: IP=%s provider=%s rows=%d grade=%s",
+        client_ip,
+        redacted.get("provider_detected"),
+        rows_parsed,
+        redacted.get("waste_grade"),
+    )
+    return redacted
+
