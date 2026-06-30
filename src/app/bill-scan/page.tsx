@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import { BillScanPage } from "@/features/bill-scan/BillScanPage";
+import { BillScanPage } from "@/components/bill-scan/BillScanPage";
+
 
 export const metadata: Metadata = {
   title: "Free Cloud Bill Scanner — CloudFinOps",
