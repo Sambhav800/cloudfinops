@@ -215,11 +215,26 @@ def _normalize_gemini_bill_payload(
         2,
     )
 
+    _VALID_CURRENCY_CODES = frozenset(
+        {"USD", "EUR", "GBP", "INR", "AUD", "CAD", "JPY", "CHF"}
+    )
+    raw_currency = str(payload.get("currency") or "").strip().upper()
+    # Reject template placeholder strings like "<3-letter ISO ...>" that Gemini
+    # may echo back when it cannot determine the currency.
+    if (
+        len(raw_currency) == 3
+        and raw_currency.isalpha()
+        and raw_currency in _VALID_CURRENCY_CODES
+    ):
+        resolved_currency = raw_currency
+    else:
+        resolved_currency = "USD"
+
     return {
         "provider": _normalize_provider(payload.get("provider")),
         "rows_parsed": max(line_item_count, len(services)),
         "total_spend": total_spend,
-        "currency": str(payload.get("currency") or "USD").strip().upper() or "USD",
+        "currency": resolved_currency,
         "by_category": by_category,
         "raw_services": services,
         "cloudfront_insights": None,
@@ -253,7 +268,7 @@ File name: {filename}
 Return only valid JSON with this exact shape:
 {{
   "provider": "aws|azure|gcp|generic",
-  "currency": "USD",
+  "currency": "<3-letter ISO currency code as shown in the bill, e.g. USD, INR, EUR, GBP>",
   "billing_period": "string if visible",
   "line_item_count": 0,
   "total_spend": 0.0,
@@ -265,6 +280,10 @@ Return only valid JSON with this exact shape:
 }}
 
 Rules:
+- CRITICAL: Read the currency from the bill header, footer, or column labels. Do NOT assume USD.
+  Common currencies: USD (US Dollar), INR (Indian Rupee), EUR (Euro), GBP (British Pound),
+  AUD (Australian Dollar), CAD (Canadian Dollar), JPY (Japanese Yen), CHF (Swiss Franc).
+  Look for symbols: $ = USD, ₹ = INR, € = EUR, £ = GBP. Return the 3-letter ISO code.
 - Extract EVERY visible service, SKU, category, or cost line — no matter how small. Do not stop at top 20. Include $0.01 lines.
 - Include region-specific sub-lines (e.g. "EC2 - US East (N. Virginia)") as separate entries.
 - Include usage detail lines (e.g. "$0.10 per GB - first 10 TB") when they have a cost amount.

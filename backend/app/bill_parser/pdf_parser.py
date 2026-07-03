@@ -834,20 +834,27 @@ def _detect_provider_from_text(lines: list[str]) -> str | None:
 
 def _detect_currency_from_text(lines: list[str]) -> str:
     text = " ".join(lines)
-    if "₹" in text or " INR " in f" {text.upper()} " or " RS." in f" {text.upper()} ":
+    text_upper = text.upper()
+
+    # Symbol checks — highest confidence
+    if "\u20b9" in text:
         return "INR"
-    if "€" in text or " EUR " in f" {text.upper()} ":
+    if "\u20ac" in text:
         return "EUR"
-    if "£" in text or " GBP " in f" {text.upper()} ":
+    if "\u00a3" in text:
         return "GBP"
-    if " CHF " in f" {text.upper()} ":
-        return "CHF"
-    if " CAD " in f" {text.upper()} ":
-        return "CAD"
-    if " AUD " in f" {text.upper()} ":
-        return "AUD"
-    if " JPY " in f" {text.upper()} ":
-        return "JPY"
+
+    # Rupee textual markers (e.g. "Rs.", "Rs " in header)
+    if re.search(r"\bRS\.?\b", text_upper):
+        return "INR"
+
+    # ISO code checks — look for the code surrounded by word boundaries so
+    # "AUD" in "FRAUD" doesn't trigger a false positive.
+    # Priority order: less-common codes first so USD doesn't crowd them out.
+    for code in ("INR", "EUR", "GBP", "CHF", "CAD", "AUD", "JPY"):
+        if re.search(rf"(?<![A-Z]){code}(?![A-Z])", text_upper):
+            return code
+
     return "USD"
 
 
@@ -884,10 +891,12 @@ def _normalize_amount_token(token: str) -> tuple[float | None, str | None]:
 
     # AWS invoices: bare decimal amounts with no currency symbol
     # Pattern: optional leading (, digits with comma separators, period, 2 decimals, optional )
+    # NOTE: We leave currency as None here — the caller will fill in the
+    # document-level currency detected by _detect_currency_from_text so we
+    # don't blindly assume USD for non-US invoices.
     if not has_currency_marker and _BARE_AMOUNT_RE.match(raw):
         has_currency_marker = True
-        if currency is None:
-            currency = "USD"
+        # currency remains None; resolved at the document level
 
     if re.search(r"[A-Za-z]", raw) and not has_currency_marker:
         return None, None
@@ -1142,7 +1151,28 @@ def parse_pdf_invoice(content: bytes, filename: str) -> tuple[pd.DataFrame, dict
 
     # Note: Service names are already cleaned inside _rollup_records
 
-    currency = currencies[0] if currencies else _detect_currency_from_text(lines)
+    # Resolve the document currency using a two-stage approach:
+    # 1. Take the majority vote from per-line currency hints (populated when
+    #    the parser found an explicit symbol like $, ₹, €, or an ISO code).
+    # 2. Cross-check with the full-document text scan which is more reliable
+    #    for invoices that only print a currency header once (not per line).
+    doc_level_currency = _detect_currency_from_text(lines)
+    if currencies:
+        # Majority vote among per-line detected currencies
+        from collections import Counter
+        currency_counts = Counter(currencies)
+        majority_currency = currency_counts.most_common(1)[0][0]
+        # If doc-level and per-line majority agree, great. If they disagree,
+        # prefer doc-level since it scans the whole document header/footer
+        # which always has the authoritative currency label.
+        if doc_level_currency != "USD" and majority_currency == "USD":
+            # Document header says non-USD but per-line defaulted to USD —
+            # doc-level wins (per-line USD was a bare-amount default, not explicit).
+            currency = doc_level_currency
+        else:
+            currency = majority_currency
+    else:
+        currency = doc_level_currency
     provider_hint = _detect_provider_from_text(lines)
     df = pd.DataFrame.from_records(
         records,

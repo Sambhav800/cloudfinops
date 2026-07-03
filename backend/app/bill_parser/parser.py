@@ -18,6 +18,89 @@ from .pdf_parser import parse_pdf_invoice
 
 logger = logging.getLogger(__name__)
 
+# Currency symbol / code → ISO code mapping used for tabular bill detection
+_CURRENCY_SYMBOL_MAP: dict[str, str] = {
+    "₹": "INR",
+    "rs.": "INR",
+    "rs ": "INR",
+    "€": "EUR",
+    "£": "GBP",
+    "¥": "JPY",
+    "chf": "CHF",
+    "a$": "AUD",
+    "c$": "CAD",
+}
+_CURRENCY_CODE_RE = re.compile(
+    r"\b(USD|EUR|GBP|INR|AUD|CAD|JPY|CHF)\b",
+    re.IGNORECASE,
+)
+_CURRENCY_COLUMN_NAMES = (
+    "billingcurrency",
+    "currency",
+    "costinbillingcurrency",
+    "currencycode",
+    "billingcurrencycode",
+    "billing_currency",
+    "invoice_currency",
+    "currency_code",
+)
+
+
+def _detect_currency_from_dataframe(df: pd.DataFrame) -> str:
+    """
+    Heuristically detect the billing currency from a tabular (CSV/Excel) bill.
+
+    Strategy (in priority order):
+    1. Look for a dedicated currency column (e.g. "BillingCurrency", "Currency").
+    2. Sample cost cell values for embedded currency symbols or ISO codes.
+    3. Scan column headers for ISO codes.
+    4. Default to USD.
+    """
+    # 1. Dedicated currency column
+    cols_lower = {col.strip().lower().replace(" ", ""): col for col in df.columns}
+    for name in _CURRENCY_COLUMN_NAMES:
+        col = cols_lower.get(name)
+        if col is None:
+            continue
+        values = df[col].dropna().astype(str).str.strip().str.upper()
+        for val in values:
+            if len(val) == 3 and val.isalpha():
+                return val
+
+    # 2. Sample cost-like column cells for embedded symbols / codes
+    cost_keywords = ("cost", "amount", "price", "charge", "spend", "total")
+    sample_text = ""
+    for col in df.columns:
+        if any(kw in col.lower() for kw in cost_keywords):
+            sample = df[col].dropna().astype(str).head(30)
+            sample_text += " ".join(sample.tolist()) + " "
+    if not sample_text:
+        # fall back: concatenate first-30 rows of the whole frame
+        sample_text = " ".join(
+            df.head(30).astype(str).values.flatten().tolist()
+        )
+
+    sample_lower = sample_text.lower()
+    if "₹" in sample_text or "rs." in sample_lower:
+        return "INR"
+    if "€" in sample_text:
+        return "EUR"
+    if "£" in sample_text:
+        return "GBP"
+
+    match = _CURRENCY_CODE_RE.search(sample_text)
+    if match:
+        return match.group(1).upper()
+
+    # 3. Scan column headers for ISO codes (always run, not just when sample is empty)
+    for col in df.columns:
+        match = _CURRENCY_CODE_RE.search(col)
+        if match:
+            return match.group(1).upper()
+
+    # 4. Default
+    return "USD"
+
 _AWS_SERVICE_COLS = ["product/ProductName", "lineItem/ProductCode", "ProductName", "Service", "product/servicename"]
 _AWS_COST_COLS = ["lineItem/NetUnblendedCost", "lineItem/UnblendedCost", "lineItem/BlendedCost", "lineItem/NetAmortizedCost", "TotalCost", "Cost"]
 
@@ -347,10 +430,12 @@ def _read_dataframe(content: bytes, filename: str) -> tuple[pd.DataFrame, dict[s
     if extension == ".csv":
         for encoding in ("utf-8", "utf-8-sig", "latin1"):
             try:
-                return pd.read_csv(io.BytesIO(content), encoding=encoding), {
+                df = pd.read_csv(io.BytesIO(content), encoding=encoding)
+                currency = _detect_currency_from_dataframe(df)
+                return df, {
                     "source_format": "csv",
                     "source_parser": f"pandas_csv_{encoding}",
-                    "currency": "USD",
+                    "currency": currency,
                 }
             except Exception:
                 continue
@@ -358,10 +443,12 @@ def _read_dataframe(content: bytes, filename: str) -> tuple[pd.DataFrame, dict[s
 
     if extension in (".xlsx", ".xls"):
         parser_name = "pandas_excel_xlsx" if extension == ".xlsx" else "pandas_excel_xls"
-        return pd.read_excel(io.BytesIO(content)), {
+        df = pd.read_excel(io.BytesIO(content))
+        currency = _detect_currency_from_dataframe(df)
+        return df, {
             "source_format": extension.lstrip("."),
             "source_parser": parser_name,
-            "currency": "USD",
+            "currency": currency,
         }
 
     if extension == ".pdf":
