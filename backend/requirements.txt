@@ -14,13 +14,15 @@ motor>=3.6.0
 pymongo>=4.10.0
 
 # Cloud SDKs
+azure-core>=1.30.0
+azure-mgmt-core>=1.4.0
 azure-identity>=1.15.0
 azure-mgmt-resource>=23.0.0
 azure-mgmt-compute>=30.0.0
 azure-mgmt-network>=25.0.0
 azure-mgmt-monitor>=6.0.0
 azure-mgmt-storage>=21.0.0
-azure-mgmt-costmanagement==4.0.1
+azure-mgmt-costmanagement>=5.0.0
 azure-storage-blob>=12.19.0
 boto3>=1.34.0
 google-cloud-compute>=1.0.0

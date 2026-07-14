@@ -400,21 +400,6 @@ class CommitmentEngine:
                         logger.error(f"Error fetching commitments: {res}")
                     integrations_needing_fallback.append(integration)
 
-        # Fallback: synthesize from scan metadata / resource costs for integrations with no live data
-        if not all_commitments and integrations_needing_fallback:
-            resources = await db.get_resources(user_id)
-            cost_by_integration: dict[str, float] = {}
-            for resource in resources:
-                iid = str(resource.get("integration_id") or "")
-                cost_by_integration[iid] = cost_by_integration.get(iid, 0.0) + float(resource.get("cost") or 0)
-
-            for integration in integrations_needing_fallback:
-                iid = str(integration.get("id") or "")
-                resource_cost = cost_by_integration.get(iid, 0.0)
-                all_commitments.extend(
-                    self._synthesize_commitments_from_scan(integration, resource_cost=resource_cost)
-                )
-
         return all_commitments
 
 commitment_engine = CommitmentEngine()

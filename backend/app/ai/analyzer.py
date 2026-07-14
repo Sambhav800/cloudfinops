@@ -348,29 +348,29 @@ class AIAnalyzer:
 
 **YOUR JOB:** Independently analyze EVERY SINGLE resource and classify it. Do NOT blindly trust the scanner's status (scanner_status field). Look at the ACTUAL metadata to make your own decision.
 
-**CLASSIFICATION RULES (be thorough — flag everything suspicious):**
-- "active" = Resource is genuinely in use AND properly sized
-- "zombie" = Resource exists but is NOT actually doing useful work:
-  * EC2/VM: stopped for any period, OR running but avg CPU < 10% over 7 days, OR no public/private connections
-  * Containers: no running tasks, old task definitions
-  * Databases: no recent connections, multi-AZ dev instances
-- "idle" = Temporarily unused but MIGHT be intentional (verify by checking tags for dev/staging/test/sandbox)
-  * If NO dev/test/staging tags → classify as ZOMBIE, not idle
-  * Only classify as idle if clear evidence of intentional pause
+**CLASSIFICATION RULES (be precise — only flag what the data proves):**
+- "active" = Resource is genuinely in use OR properly serving its purpose
+  * IMPORTANT: If scanner_status is "healthy" the scanner already verified this with real metrics — do NOT override to zombie unless you see clear contradicting evidence in the metadata
+  * Newly created resources (< 7 days old) should generally be "active" unless clearly abandoned
+- "zombie" = Resource exists but is definitively NOT doing useful work:
+  * EC2/VM: stopped/deallocated for extended period AND no dev/test/staging tags
+  * VMs with avg CPU < 2% AND network < 5MB over 7+ days (scanner already checks this)
+  * Containers: no running tasks for 30+ days
+  * DO NOT classify running VMs as zombie just because CPU is below 10% — they may run scheduled jobs or serve low-traffic APIs
+- "idle" = Temporarily unused with clear evidence of intentional pause (dev/test/staging tags present)
 - "waste" = Clearly wasted money with zero value:
-  * EBS volumes in "available" state (unattached) = ALWAYS waste
-  * Elastic IPs without AssociationId = ALWAYS waste
-  * Empty/default security groups not attached to anything = waste
-  * Orphaned snapshots older than 90 days = waste
-  * NAT gateways with no routes = waste
-  * Load balancers with no targets = waste
+  * Unattached disks/volumes = waste
+  * Unassociated Elastic/Public IPs = waste
+  * Load balancers with no backend targets = waste
   * Unattached network interfaces = waste
-- "oversized" = Running but using way more capacity than needed:
-  * EC2 with avg CPU < 20% → could downsize
-  * EBS with provisioned IOPS but low actual IOPS
-  * RDS multi-AZ for non-production workloads
+  * Orphaned snapshots older than 90 days = waste
+- "oversized" = Running and useful but using significantly more capacity than needed:
+  * VM/EC2 with avg CPU consistently < 15% over 7+ days AND could run on a smaller instance
+  * Disks with very low IOPS relative to provisioned capacity
+  * Premium SKU storage accounts with low transaction volumes
+  * Provide specific downsizing recommendation in ai_action
 
-**CRITICAL: Be AGGRESSIVE about finding waste. Real cloud environments have 20-35% waste. If you only find 1-2 issues, you are being too conservative. Check EVERY resource.**
+**IMPORTANT: Trust the scanner's metrics-based classification. The scanner uses 7-day CPU/network averages which are MORE reliable than guessing from metadata. Only reclassify if you see clear contradicting evidence.**
 
 **COST RULES:**
 - Use only the numeric `cost` value supplied by the scanner.
@@ -736,31 +736,66 @@ Return ONLY valid JSON."""
             
             if v:
                 ai_status = v.get("ai_status", "").lower()
-                
+                scanner_status = r.get("status", "").lower()
+
                 status_map = {
-                    "active": "Active",
-                    "zombie": "Zombie",
-                    "idle": "Idle",
-                    "waste": "Zombie",
-                    "oversized": "Active",
+                    "active": "healthy",
+                    "zombie": "zombie",
+                    "idle": "idle",
+                    "waste": "waste",
+                    "oversized": "oversized",
                 }
-                
-                r["status"] = status_map.get(ai_status, r.get("status", "Active"))
-                r["ai_verified"] = True
-                r["ai_status"] = ai_status
-                r["ai_reasoning"] = v.get("ai_reasoning", "")
-                r["ai_savings"] = self._bounded_real_savings(r, v.get("ai_savings", 0))
-                r["ai_severity"] = v.get("ai_severity", "none")
-                r["ai_action"] = v.get("ai_action", "none")
-                
-                if ai_status in ("zombie", "waste", "idle", "oversized"):
-                    r["waste_reason"] = v.get("ai_reasoning", r.get("waste_reason", ""))
-                    r["waste_type"] = ai_status
-                    r["confidence_score"] = 0.9
+
+                ai_mapped = status_map.get(ai_status, r.get("status", "healthy"))
+
+                if scanner_status in ("healthy", "active", "underutilized", "moderate", "oversized"):
+                    # Scanner used real metrics to classify (healthy/underutilized/moderate/
+                    # oversized are all metrics-confirmed). AI should NOT override these.
+                    r["ai_verified"] = True
+                    r["ai_status"] = ai_status
+                    r["ai_reasoning"] = v.get("ai_reasoning", "")
+                    r["ai_action"] = v.get("ai_action", "none")
+
+                    if ai_status == "oversized":
+                        r["status"] = "oversized"
+                        r["waste_type"] = "oversized"
+                        r["waste_reason"] = v.get("ai_reasoning", "")
+                        r["ai_savings"] = self._bounded_real_savings(r, v.get("ai_savings", 0))
+                        r["ai_severity"] = v.get("ai_severity", "medium")
+                        r["confidence_score"] = 0.75
+                    else:
+                        r["ai_savings"] = 0
+                        r["ai_severity"] = "none"
+                        r["waste_reason"] = None
+                        r["waste_type"] = None
+                        r["confidence_score"] = 0.0
+                elif scanner_status == "unknown":
+                    # Scanner had insufficient data — trust AI classification
+                    r["status"] = ai_mapped
+                    r["ai_verified"] = True
+                    r["ai_status"] = ai_status
+                    r["ai_reasoning"] = v.get("ai_reasoning", "")
+                    r["ai_savings"] = self._bounded_real_savings(r, v.get("ai_savings", 0))
+                    r["ai_severity"] = v.get("ai_severity", "none")
+                    r["ai_action"] = v.get("ai_action", "none")
+
+                    if ai_status in ("zombie", "waste", "idle", "oversized"):
+                        r["waste_reason"] = v.get("ai_reasoning", r.get("waste_reason", ""))
+                        r["waste_type"] = "oversized" if ai_status == "oversized" else ai_status
+                        r["confidence_score"] = 0.85
+                    else:
+                        r["waste_reason"] = None
+                        r["waste_type"] = None
+                        r["confidence_score"] = 0.0
                 else:
-                    r["waste_reason"] = None
-                    r["waste_type"] = None
-                    r["confidence_score"] = 0.0
+                    # Scanner already classified (zombie/waste/non_compliant) — keep it,
+                    # but enrich with AI reasoning
+                    r["ai_verified"] = True
+                    r["ai_status"] = ai_status
+                    r["ai_reasoning"] = v.get("ai_reasoning", "")
+                    r["ai_savings"] = self._bounded_real_savings(r, v.get("ai_savings", 0))
+                    r["ai_severity"] = v.get("ai_severity", "none")
+                    r["ai_action"] = v.get("ai_action", "none")
             else:
                 r["ai_verified"] = False
             
