@@ -43,12 +43,16 @@ class CommitmentEngine:
         integration: dict,
     ) -> tuple[List[CloudCommitment], bool]:
         metadata = integration.get("metadata")
-        if not isinstance(metadata, dict) or "demo_commitments" not in metadata:
+        if not isinstance(metadata, dict):
+            return [], False
+
+        # Only serve demo commitments for explicitly flagged demo integrations
+        if metadata.get("environment") != "demo":
             return [], False
 
         raw_commitments = metadata.get("demo_commitments")
         if not isinstance(raw_commitments, list):
-            return [], True
+            return [], False
 
         parsed: List[CloudCommitment] = []
         for raw_commitment in raw_commitments:
@@ -63,7 +67,7 @@ class CommitmentEngine:
                     error,
                 )
 
-        return parsed, True
+        return parsed, bool(parsed)
 
     def _get_aws_client(self, service: str, access_key_id: str, secret_access_key: str, region: str = "us-east-1"):
         """Get a boto3 client for a specific service and region."""
@@ -281,65 +285,6 @@ class CommitmentEngine:
 
         return await loop.run_in_executor(self.executor, fetch)
 
-    def _synthesize_commitments_from_scan(
-        self,
-        integration: dict,
-        resource_cost: float = 0.0,
-    ) -> List[CloudCommitment]:
-        """
-        Generate realistic commitments from integration scan metadata or resource costs
-        when live API calls fail or credentials are unavailable.
-        """
-        metadata = integration.get("metadata") if isinstance(integration.get("metadata"), dict) else {}
-
-        potential_savings = float(metadata.get("potential_savings") or 0)
-        last_month_cost = float(metadata.get("last_month_cost") or 0)
-
-        # Use resource cost as a fallback source
-        cost_basis = last_month_cost or resource_cost
-        if potential_savings <= 0 and cost_basis <= 0:
-            return []
-
-        provider = str(integration.get("provider") or "").lower()
-        integration_id = str(integration.get("id") or "")
-        now = datetime.now(timezone.utc)
-
-        compute_spend = cost_basis * 0.65 if cost_basis > 0 else potential_savings * 3.0
-
-        commitment_type_map = {
-            "aws": ("Savings Plan", "Compute"),
-            "gcp": ("CUD", "Compute"),
-            "azure": ("Reservation", "Instance"),
-        }
-        c_type, c_coverage = commitment_type_map.get(provider, ("Savings Plan", "Compute"))
-
-        commitment_amount = round(compute_spend * 0.40, 2)
-        savings = round(commitment_amount * 0.34, 2)
-        utilization = 91.0 if potential_savings > 0 else 87.5
-
-        name_map = {
-            "aws": "Compute Savings Plan",
-            "gcp": "Committed Use Discount",
-            "azure": "Reserved Instance",
-        }
-
-        return [
-            CloudCommitment(
-                id=f"{integration_id}-commitment-synth",
-                provider=provider,
-                type=c_type,
-                name=name_map.get(provider, "Commitment"),
-                status="active",
-                start_date=(now - timedelta(days=120)).isoformat(),
-                end_date=(now + timedelta(days=245)).isoformat(),
-                commitment_amount=commitment_amount,
-                currency="USD",
-                region=(integration.get("regions") or ["global"])[0] if integration.get("regions") else "global",
-                utilization_pct=utilization,
-                savings_amount=savings,
-                coverage_type=c_coverage,
-            )
-        ]
 
     async def get_commitments(self, user_id: str) -> List[CloudCommitment]:
         """

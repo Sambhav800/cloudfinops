@@ -850,16 +850,16 @@ class MongoDBClient:
         }
 
     async def upsert_dashboard_stats(self, stats: Dict[str, Any]) -> bool:
+        collection = await self._collection("dashboard_stats")
+        doc = self._prepare_document("dashboard_stats", stats)
         if stats.get("user_id") and stats.get("integration_id"):
-            try:
-                await self.delete(
-                    "dashboard_stats",
-                    {"user_id": stats["user_id"], "integration_id": stats["integration_id"]},
-                )
-            except Exception:
-                pass
-
-        await self.insert("dashboard_stats", stats)
+            await collection.replace_one(
+                {"user_id": stats["user_id"], "integration_id": stats["integration_id"]},
+                doc,
+                upsert=True,
+            )
+        else:
+            await collection.insert_one(doc)
         return True
 
     async def update_dashboard_stats(
@@ -1224,13 +1224,11 @@ class MongoDBClient:
             return
 
         try:
-            try:
-                await self.delete(
-                    "daily_spend_history",
-                    {"user_id": normalized_user_id, "integration_id": normalized_integration_id},
-                )
-            except Exception:
-                pass
+            collection = await self._collection("daily_spend_history")
+            # Atomic: delete old rows then insert new ones in a single try block
+            await collection.delete_many(
+                {"user_id": normalized_user_id, "integration_id": normalized_integration_id}
+            )
 
             rows = []
             for day in daily_totals:
@@ -1246,11 +1244,7 @@ class MongoDBClient:
                 )
 
             if rows:
-                batch_size = 50
-                for index in range(0, len(rows), batch_size):
-                    batch = rows[index:index + batch_size]
-                    await self.insert("daily_spend_history", batch)
-
+                await collection.insert_many(rows, ordered=False)
                 logger.info(
                     "Saved %s daily spend records for integration %s",
                     len(rows),

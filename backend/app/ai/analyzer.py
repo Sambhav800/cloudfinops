@@ -766,8 +766,10 @@ Return ONLY valid JSON."""
                     else:
                         r["ai_savings"] = 0
                         r["ai_severity"] = "none"
-                        r["waste_reason"] = None
-                        r["waste_type"] = None
+                        if not r.get("waste_reason"):
+                            r["waste_reason"] = None
+                        if not r.get("waste_type"):
+                            r["waste_type"] = None
                         r["confidence_score"] = 0.0
                 elif scanner_status == "unknown":
                     # Scanner had insufficient data — trust AI classification

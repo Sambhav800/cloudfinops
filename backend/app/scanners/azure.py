@@ -1876,7 +1876,8 @@ class AzureWasteScanner:
                     violations: List[Dict[str, Any]] = []
                     
                     # Tag compliance
-                    missing_tags = [t for t in self.REQUIRED_TAGS if t not in tags]
+                    tags_lower = {k.lower(): k for k, v in tags.items()}
+                    missing_tags = [t for t in self.REQUIRED_TAGS if t.lower() not in tags_lower]
                     if missing_tags:
                         violations.append({
                             "type": "missing_tag",

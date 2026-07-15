@@ -1251,7 +1251,118 @@ def _count_dashboard_resources(resources: list[dict[str, Any]]) -> int:
     return sum(1 for resource in resources if _is_dashboard_counted_resource(resource))
 
 
-_SCAN_AI_VERIFICATION_TIMEOUT_SECONDS = 45.0
+def _build_deterministic_governance(resources: list[dict[str, Any]], total_spend: float) -> dict[str, Any]:
+    """Build governance data from actual scanner findings — no AI, no guessing."""
+    total = len(resources) or 1
+    tag_violations = []
+    security_violations = []
+    idle_count = 0
+    underutilized_count = 0
+    orphan_count = 0
+
+    for r in resources:
+        status = str(r.get("status") or "").lower()
+        waste_type = str(r.get("waste_type") or "").lower()
+        govs = r.get("governance_violations") or []
+
+        for g in govs:
+            if g.get("type") == "missing_tag":
+                tag_violations.append({
+                    "resource": r.get("resource_name", "Unknown"),
+                    "tags": g.get("tags", []),
+                })
+
+        if waste_type == "security_risk":
+            security_violations.append(r.get("resource_name", "Unknown"))
+        if status in ("zombie", "idle"):
+            idle_count += 1
+        if status in ("underutilized", "oversized", "moderate"):
+            underutilized_count += 1
+        if "orphan" in waste_type:
+            orphan_count += 1
+
+    compliant_count = total - len(tag_violations) - len(security_violations) - idle_count - orphan_count
+    score = max(0, min(100, round((compliant_count / total) * 100)))
+
+    if score >= 80:
+        rating = "Good"
+    elif score >= 60:
+        rating = "Fair"
+    elif score >= 40:
+        rating = "Needs Attention"
+    else:
+        rating = "Critical"
+
+    policies = [
+        {
+            "name": "All resources tagged",
+            "status": "pass" if not tag_violations else "fail",
+            "severity": "medium",
+            "reason": f"{len(tag_violations)} resources missing required tags" if tag_violations else "All resources properly tagged",
+            "framework": "FinOps",
+        },
+        {
+            "name": "No idle/zombie resources",
+            "status": "pass" if idle_count == 0 else "fail",
+            "severity": "high",
+            "reason": f"{idle_count} idle resources detected" if idle_count else "No idle resources",
+            "framework": "Well-Architected",
+        },
+        {
+            "name": "No public exposure without justification",
+            "status": "pass" if not security_violations else "fail",
+            "severity": "critical",
+            "reason": f"{len(security_violations)} resources with risky inbound rules" if security_violations else "All NSGs properly configured",
+            "framework": "CIS",
+        },
+        {
+            "name": "Resources right-sized",
+            "status": "pass" if underutilized_count == 0 else "fail",
+            "severity": "medium",
+            "reason": f"{underutilized_count} underutilized resources" if underutilized_count else "All resources appropriately sized",
+            "framework": "FinOps",
+        },
+        {
+            "name": "No orphaned resources",
+            "status": "pass" if orphan_count == 0 else "fail",
+            "severity": "medium",
+            "reason": f"{orphan_count} orphaned disks/IPs/NICs" if orphan_count else "No orphaned resources",
+            "framework": "Well-Architected",
+        },
+    ]
+
+    tag_top_violators = [
+        {"resource": tv["resource"], "missing": tv["tags"]}
+        for tv in tag_violations[:10]
+    ]
+    tagged_pct = round(((total - len(tag_violations)) / total) * 100)
+
+    return {
+        "score": score,
+        "rating": rating,
+        "trend": "stable",
+        "tagging": {
+            "compliancePct": tagged_pct,
+            "untaggedAssets": len(tag_violations),
+            "topViolators": tag_top_violators,
+        },
+        "budget": {
+            "projectedSpend": total_spend,
+            "limit": 0,
+            "burnRate": 0,
+            "alert": "Budget tracking requires a budget limit to be set in Settings.",
+        },
+        "officeHours": {
+            "savings": 0,
+            "enabled": False,
+            "recommendation": "Configure office hours scheduling for non-production workloads to reduce costs.",
+        },
+        "policies": policies,
+        "trends": [score],
+    }
+
+
+_SCAN_AI_VERIFICATION_TIMEOUT_SECONDS = 120.0
 
 
 async def _run_scan_ai_verification(
@@ -2056,26 +2167,55 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                     if r.get("resource_name")
                 }
                 
+                # Build deterministic recommendations from scanner findings
+                # These are generated regardless of whether AI succeeds
+                scanner_notifications = []
+                for finding in db_resources:
+                    waste_type = finding.get("waste_type")
+                    waste_reason = finding.get("waste_reason")
+                    status = finding.get("status", "")
+                    if not waste_type and status not in ("zombie", "waste", "underutilized", "non_compliant"):
+                        continue
+                    if not waste_reason:
+                        continue
+                    rname = finding.get("resource_name", "")
+                    db_resource_id = resource_id_map.get(rname.lower())
+                    severity = "high" if status in ("zombie", "waste") else "medium"
+                    scanner_notifications.append({
+                        "user_id": user_id,
+                        "resource_id": db_resource_id,
+                        "type": "cost_optimization",
+                        "status": "pending",
+                        "recommendation": waste_reason,
+                        "action": waste_type or "review",
+                        "metadata": {
+                            "resource_name": rname,
+                            "resource_type": finding.get("service_type", "Cloud Resource"),
+                            "severity": severity,
+                            "description": waste_reason,
+                            "integration_id": integration_id,
+                            "potential_savings": finding.get("cost", 0),
+                            "source": "scanner",
+                        },
+                    })
+
+                # Clear old notifications THEN insert new ones
+                try:
+                    await _clear_pending_notifications_for_integration(
+                        db=db,
+                        user_id=user_id,
+                        integration_id=integration_id,
+                    )
+                except Exception as error:
+                    logger.warning("Could not clear old Azure notifications: %s", error)
+
+                # Insert AI recommendations if available
+                all_notifications = []
                 if ai_stats.get("recommendations"):
-                    try:
-                        deleted_count = await _clear_pending_notifications_for_integration(
-                            db=db,
-                            user_id=user_id,
-                            integration_id=integration_id,
-                        )
-                        logger.info(
-                            "Cleared %d old notifications for Azure integration %s",
-                            deleted_count,
-                            integration_id,
-                        )
-                    except Exception as error:
-                        logger.warning("Could not clear old Azure notifications: %s", error)
-                    
-                    notifications = []
                     for rec in ai_stats["recommendations"]:
                         rname = rec.get("resource_name", "")
                         db_resource_id = resource_id_map.get(rname.lower())
-                        notifications.append(
+                        all_notifications.append(
                             _build_scan_recommendation_notification(
                                 recommendation=rec,
                                 user_id=user_id,
@@ -2083,10 +2223,23 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                                 resource_id=db_resource_id,
                             )
                         )
-                    
-                    if notifications:
-                        await db.create_notifications(notifications)
-                        logger.info("Inserted %d AI-verified Azure recommendations", len(notifications))
+
+                # Merge: AI recommendations take priority, scanner fills the gaps
+                ai_resource_names = {
+                    (n.get("metadata") or {}).get("resource_name", "").lower()
+                    for n in all_notifications
+                }
+                for sn in scanner_notifications:
+                    sn_name = (sn.get("metadata") or {}).get("resource_name", "").lower()
+                    if sn_name not in ai_resource_names:
+                        all_notifications.append(sn)
+
+                if all_notifications:
+                    await db.create_notifications(all_notifications)
+                    logger.info("Inserted %d recommendations (%d AI + %d scanner) for Azure",
+                                len(all_notifications),
+                                len(all_notifications) - len(scanner_notifications),
+                                len(scanner_notifications))
                 
                 # Generate governance policies 
                 await send_scan_progress(user_id, integration_id, 88, "Generating governance policies...")
@@ -2171,21 +2324,15 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                     },
                 )
                 
-                # Complete scan history
-                if ai_stats.get("governance_data"):
-                    logger.debug(
-                        "Saving governance_data for Azure: %s",
-                        list(ai_stats["governance_data"].keys()) if ai_stats.get("governance_data") else "NONE",
-                    )
-                else:
-                    logger.debug("No governance_data for Azure scan")
+                # Build deterministic governance data from actual scan findings
+                governance_data = _build_deterministic_governance(db_resources, total_spend)
 
                 await db.complete_scan_history(
                     scan_id=scan_id,
                     total_resources=len(findings),
                     waste_found=len(ai_stats.get("recommendations", [])),
                     total_savings=potential_savings,
-                    governance_data=ai_stats.get("governance_data")
+                    governance_data=governance_data
                 )
                 
                 await send_scan_progress(user_id, integration_id, 90, "Finalizing analysis...")
