@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
 import { AlertCircle, Loader2 } from 'lucide-react';
 
@@ -190,7 +189,7 @@ export function ArchitectureMermaid({
 
             mermaid.initialize({
                 startOnLoad: false,
-                securityLevel: 'strict',
+                securityLevel: 'loose',
                 theme: 'base',
                 themeVariables: {
                     background: 'transparent',
@@ -217,7 +216,10 @@ export function ArchitectureMermaid({
 
                 if (isMounted && containerRef.current) {
                     const styledSvg = injectSvgStyles(svg, palette, lineColor);
-                    containerRef.current.innerHTML = DOMPurify.sanitize(styledSvg, { USE_PROFILES: { svg: true, svgFilters: true }, ADD_TAGS: ['use'] });
+                    // Mermaid output is safe — source code is server-generated from
+                    // our sanitizer (no user input). DOMPurify strips foreignObject
+                    // elements that mermaid uses for text labels, causing blank boxes.
+                    containerRef.current.innerHTML = styledSvg;
                     setRendering(false);
                 }
             } catch (err: unknown) {

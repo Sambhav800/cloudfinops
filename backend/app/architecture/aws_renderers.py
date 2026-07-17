@@ -437,15 +437,25 @@ def _render_standalone_summary(lines: List[str], standalone: StandaloneGroup) ->
 def _format_counts(counts: Dict[str, int]) -> str:
     """Format resource counts like '5 EC2 · 2 RDS · 3 Subnets'."""
     parts = []
-    # Ordered by importance
+    # Ordered by importance — covers both AWS and Azure kind names
     for kind, display in [
         ("ec2", "EC2"),
+        ("vm", "VMs"),
         ("rds", "RDS"),
+        ("sql", "SQL"),
         ("ebs", "EBS"),
+        ("disk", "Disks"),
         ("eip", "EIP"),
+        ("pip", "IPs"),
+        ("lb", "LBs"),
+        ("nic", "NICs"),
         ("subnet", "Subnets"),
+        ("aks", "AKS"),
     ]:
         c = counts.get(kind, 0)
         if c > 0:
             parts.append(f"{c} {display}")
-    return " · ".join(parts) if parts else "0 resources"
+    if not parts:
+        total = sum(counts.values())
+        return f"{total} resources" if total > 0 else "0 resources"
+    return " · ".join(parts)
