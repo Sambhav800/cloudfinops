@@ -133,6 +133,31 @@ def build_region_topology(
                 if subnet_id in subnet_to_vnet:
                     vm_vnet_map[resource_id] = subnet_to_vnet[subnet_id]
 
+    # Auto-create subnet nodes from VM references when no subnet resources exist
+    created_subnets: set = set()
+    for resource_id, subnet_id in vm_subnet_map.items():
+        if subnet_id in subnet_to_vnet or subnet_id in created_subnets:
+            continue
+        vnet_id = vm_vnet_map.get(resource_id)
+        if not vnet_id:
+            continue
+        if vnet_id not in vpcs:
+            vpcs[vnet_id] = VpcTopology(
+                vpc_id=vnet_id,
+                name=vnet_id,
+                cidr_block="10.0.0.0/16",
+            )
+        subnet_node = SubnetNode(
+            subnet_id=subnet_id,
+            name=subnet_id,
+            cidr_block="10.0.0.0/24",
+            availability_zone=region,
+            vpc_id=vnet_id,
+        )
+        vpcs[vnet_id].subnets.append(subnet_node)
+        subnet_to_vnet[subnet_id] = vnet_id
+        created_subnets.add(subnet_id)
+
     # Place resources into VNet/Subnet hierarchy
     for row in vnet_resources:
         kind = fa.get_service_kind(row)

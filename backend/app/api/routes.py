@@ -1281,7 +1281,14 @@ def _build_deterministic_governance(resources: list[dict[str, Any]], total_spend
         if "orphan" in waste_type:
             orphan_count += 1
 
-    compliant_count = total - len(tag_violations) - len(security_violations) - idle_count - orphan_count
+    # Count unique non-compliant resources (a resource can have multiple violations)
+    non_compliant_names: set = set()
+    for tv in tag_violations:
+        non_compliant_names.add(tv["resource"])
+    for sv in security_violations:
+        non_compliant_names.add(sv)
+    non_compliant_count = len(non_compliant_names) + idle_count + orphan_count
+    compliant_count = max(0, total - non_compliant_count)
     score = max(0, min(100, round((compliant_count / total) * 100)))
 
     if score >= 80:

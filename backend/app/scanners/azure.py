@@ -1874,16 +1874,24 @@ class AzureWasteScanner:
                     
                     # 1. GOVERNANCE CHECKS
                     violations: List[Dict[str, Any]] = []
-                    
-                    # Tag compliance
-                    tags_lower = {k.lower(): k for k, v in tags.items()}
-                    missing_tags = [t for t in self.REQUIRED_TAGS if t.lower() not in tags_lower]
-                    if missing_tags:
-                        violations.append({
-                            "type": "missing_tag",
-                            "tags": missing_tags,
-                            "message": f"Missing required tags: {', '.join(missing_tags)}"
-                        })
+
+                    # Tag compliance — only enforce on billable resource types
+                    # (skip infrastructure: NSGs, NICs, VNets, subnets, route tables, watchers)
+                    resource_type_lower = resource_type.lower()
+                    skip_tag_check = any(infra in resource_type_lower for infra in (
+                        "networksecuritygroups", "networkinterfaces", "virtualnetworks",
+                        "subnets", "routetables", "networkwatchers", "natgateways",
+                        "bastionhosts", "privatednszones", "applicationgateways/sslcertificates",
+                    ))
+                    if not skip_tag_check:
+                        tags_lower = {k.lower(): k for k, v in tags.items()}
+                        missing_tags = [t for t in self.REQUIRED_TAGS if t.lower() not in tags_lower]
+                        if missing_tags:
+                            violations.append({
+                                "type": "missing_tag",
+                                "tags": missing_tags,
+                                "message": f"Missing required tags: {', '.join(missing_tags)}"
+                            })
                     
                     # Region compliance
                     region_compliant = (
