@@ -12,6 +12,7 @@ import { buildBackendAuthHeaders } from '@/app/api/_shared/fetch-with-backend-au
 interface ScanContextType {
     isScanning: boolean;
     startScan: () => Promise<void>;
+    showScanProgress: () => void;
     resetScan: () => void;
     lastScanResult: Record<string, unknown> | null;
 }
@@ -19,6 +20,7 @@ interface ScanContextType {
 const defaultScanContext: ScanContextType = {
     isScanning: false,
     startScan: async () => { },
+    showScanProgress: () => { },
     resetScan: () => { },
     lastScanResult: null,
 };
@@ -352,8 +354,19 @@ export function ScanProvider({ children }: { children: ReactNode }) {
         }
     };
 
+    const showScanProgress = () => {
+        if (isScanning) return;
+        setIsScanning(true);
+        setStep("processing");
+        setProgress(5);
+        setStatus("Scan in progress...");
+        setErrorMsg("");
+        setIsMinimized(false);
+        setLastScanResult(null);
+    };
+
     return (
-        <ScanContext.Provider value={{ isScanning, startScan, resetScan, lastScanResult }}>
+        <ScanContext.Provider value={{ isScanning, startScan, showScanProgress, resetScan, lastScanResult }}>
             {children}
             <AnimatePresence>
                 {isScanning && (
