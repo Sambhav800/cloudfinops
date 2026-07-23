@@ -111,13 +111,13 @@ export function ScanProvider({ children }: { children: ReactNode }) {
                         setStep("processing");
                     } else if (data.status === 'complete') {
                         setProgress(100);
-                        setStatus("Analysis Complete");
+                        setStatus("Analysis Complete — Dashboard Updated");
                         setStep("success");
                         router.refresh();
                         setTimeout(() => {
                             setIsScanning(false);
                             setStep("idle");
-                        }, 3000);
+                        }, 5000);
                         stopped = true;
                         return;
                     } else if (data.status === 'idle') {

@@ -2083,11 +2083,31 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                 # =============================================================
                 # AI VERIFICATION — Feed Azure findings to Gemini Flash
                 # =============================================================
-                await send_scan_progress(user_id, integration_id, 60, "Running AI verification (Gemini Flash)...")
-                
+                await send_scan_progress(user_id, integration_id, 55, "AI analyzing resource utilization patterns...")
+
                 analyzer = AIAnalyzer()
-                ai_stats = await _run_scan_ai_verification(analyzer, findings, provider="azure")
-                
+
+                # Run AI with intermediate progress ticks so the UI doesn't freeze
+                import asyncio as _asyncio
+
+                async def _ai_with_progress():
+                    task = _asyncio.create_task(
+                        _run_scan_ai_verification(analyzer, findings, provider="azure")
+                    )
+                    messages = [
+                        (60, "AI classifying idle vs active resources..."),
+                        (63, "AI evaluating rightsizing opportunities..."),
+                        (66, "AI scoring governance compliance..."),
+                    ]
+                    for pct, msg in messages:
+                        if task.done():
+                            break
+                        await send_scan_progress(user_id, integration_id, pct, msg)
+                        await _asyncio.sleep(8)
+                    return await task
+
+                ai_stats = await _ai_with_progress()
+
                 # Use AI-verified resources
                 verified = ai_stats.get("verified_resources", findings)
                 
