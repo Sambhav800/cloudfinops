@@ -1,6 +1,14 @@
+import type { Metadata } from "next";
 import { Shield, Eye, Zap, Terminal, Cloud, Brain, ArrowRight } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
+
+export const metadata: Metadata = {
+  title: "About CloudFinOps — AI Cloud Cost Optimization Platform",
+  description:
+    "CloudFinOps is a bootstrapped, founder-led FinOps platform that helps mid-market teams find and eliminate wasted cloud spend across AWS, Azure, and GCP with read-only, agentless scanning.",
+  alternates: { canonical: "/about" },
+};
 
 export default function AboutPage() {
     return (

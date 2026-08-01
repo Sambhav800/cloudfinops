@@ -1,47 +1,45 @@
-"use client";
+import type { Metadata } from "next";
+import { LandingPage } from "@/components/landing/landing-page";
 
-import { Comparison } from "@/components/landing/comparison";
-import { Footer } from "@/components/landing/footer";
-import { FinalCTA } from "@/components/landing/final-cta";
-import { CursorGlow } from "@/components/landing/cursor-glow";
-import { CapabilitiesBento } from "@/components/landing/features/capabilities-bento";
-import { FeatureGovernance } from "@/components/landing/features/feature-governance";
-import { FeatureUnify } from "@/components/landing/features/feature-unify";
-import { FeatureWaste } from "@/components/landing/features/feature-waste";
-import { Hero } from "@/components/landing/hero";
-import { HorizontalShowcase } from "@/components/landing/horizontal-showcase";
-import { Metrics } from "@/components/landing/metrics";
-import { Navbar } from "@/components/landing/navbar";
-import { ScrollProgress } from "@/components/landing/scroll-progress";
-import { SectionDivider } from "@/components/landing/section-divider";
-import { Testimonials } from "@/components/landing/testimonials";
-import { WorkflowSection } from "@/components/landing/workflow-section";
+export const metadata: Metadata = {
+  title: "CloudFinOps — AI-Powered Cloud Cost Optimization for AWS, Azure & GCP",
+  description:
+    "CloudFinOps is an AI-powered FinOps platform that detects idle cloud resources, reduces waste by up to 30%, and automates governance across AWS, Azure, and GCP. Read-only, agentless, setup in 5 minutes.",
+  alternates: { canonical: "/" },
+};
 
-export default function LandingPage() {
-    return (
-        <main className="relative min-h-screen overflow-x-clip bg-[#07080c] text-zinc-100 antialiased selection:bg-indigo-500/30 selection:text-white">
-            <ScrollProgress />
-            <CursorGlow />
-            <Navbar />
+const homeJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "CloudFinOps",
+  applicationCategory: "BusinessApplication",
+  operatingSystem: "Web",
+  description:
+    "AI-powered FinOps platform that detects idle cloud resources, reduces waste by up to 30%, and automates governance across AWS, Azure, and GCP.",
+  offers: {
+    "@type": "Offer",
+    price: "0",
+    priceCurrency: "USD",
+    description: "Free 7-day cloud audit",
+  },
+  featureList: [
+    "AI-powered cost optimization",
+    "Multi-cloud support (AWS, Azure, GCP)",
+    "Read-only agentless scanning",
+    "Real-time anomaly detection",
+    "Governance automation",
+    "Compliance reporting (SOC 2, ISO 27001, GDPR)",
+  ],
+};
 
-            <div className="relative z-10">
-                <Hero />
-
-                <SectionDivider />
-                <HorizontalShowcase />
-                <FeatureUnify />
-                <FeatureWaste />
-                <FeatureGovernance />
-                <WorkflowSection />
-                <CapabilitiesBento />
-                <SectionDivider />
-                <Metrics />
-                <Testimonials />
-                <Comparison />
-                <FinalCTA />
-
-                <Footer />
-            </div>
-        </main>
-    );
+export default function HomePage() {
+  return (
+    <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(homeJsonLd) }}
+      />
+      <LandingPage />
+    </>
+  );
 }

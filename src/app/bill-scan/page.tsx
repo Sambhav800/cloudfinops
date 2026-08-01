@@ -3,9 +3,10 @@ import { BillScanPage } from "@/components/bill-scan/BillScanPage";
 
 
 export const metadata: Metadata = {
-  title: "Free Cloud Bill Scanner — CloudFinOps",
+  title: "Free Cloud Bill Scanner — Instant Waste Grade & Savings Estimate",
   description:
-    "Drop your AWS, Azure, or GCP billing export and get an instant waste grade, savings estimate, and top findings. No signup required.",
+    "Drop your AWS, Azure, or GCP billing export and get an instant waste grade, savings estimate, and top findings. No signup required. 100% free.",
+  alternates: { canonical: "/bill-scan" },
 };
 
 /**

@@ -1,4 +1,12 @@
+import type { Metadata } from "next";
 import { CloudCog, ScanSearch, LineChart, Sparkles, ArrowRight } from "lucide-react";
+
+export const metadata: Metadata = {
+  title: "How It Works — Connect, Scan & Optimize Your Cloud in 4 Steps",
+  description:
+    "Learn how CloudFinOps works: connect your AWS or Azure account with read-only access, get AI-powered scanning, receive prioritized savings recommendations, and optimize continuously.",
+  alternates: { canonical: "/how-it-works" },
+};
 
 const steps = [
     {
@@ -51,9 +59,48 @@ const steps = [
     }
 ];
 
+const howToJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "HowTo",
+  name: "How to Optimize Cloud Costs with CloudFinOps",
+  description:
+    "Four simple steps to start saving on your cloud infrastructure costs using CloudFinOps AI-powered platform.",
+  totalTime: "PT10M",
+  step: [
+    {
+      "@type": "HowToStep",
+      position: 1,
+      name: "Connect Your Cloud",
+      text: "Securely connect your AWS or Azure accounts using read-only IAM roles. No agents required, no infrastructure changes needed. Setup completed in under 5 minutes.",
+    },
+    {
+      "@type": "HowToStep",
+      position: 2,
+      name: "Automated Scanning",
+      text: "Our AI-powered engine analyzes your entire cloud infrastructure, identifying optimization opportunities, idle resources, and cost anomalies.",
+    },
+    {
+      "@type": "HowToStep",
+      position: 3,
+      name: "Get Actionable Insights",
+      text: "Receive prioritized recommendations with estimated savings. Each insight includes step-by-step implementation guidance and risk assessment.",
+    },
+    {
+      "@type": "HowToStep",
+      position: 4,
+      name: "Save & Optimize",
+      text: "Implement changes at your pace with human-in-the-loop approval system. Track savings and continuously optimize with monthly reports.",
+    },
+  ],
+};
+
 export default function HowItWorksPage() {
     return (
         <div className="bg-black min-h-screen pt-24 pb-12">
+            <script
+                type="application/ld+json"
+                dangerouslySetInnerHTML={{ __html: JSON.stringify(howToJsonLd) }}
+            />
             <div className="mx-auto max-w-5xl px-6 lg:px-8">
                 <div className="text-center mb-16">
                     <h1 className="text-4xl font-bold tracking-tight text-white sm:text-6xl mb-4">

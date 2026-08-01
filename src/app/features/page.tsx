@@ -1,4 +1,12 @@
+import type { Metadata } from "next";
 import { Zap, Shield, TrendingDown, Bell, BarChart3, Cloud, Lock, Bot } from "lucide-react";
+
+export const metadata: Metadata = {
+  title: "Features — Cloud Cost Optimization, Anomaly Detection & Governance",
+  description:
+    "Explore CloudFinOps features: AI-powered cost optimization, real-time anomaly detection, multi-cloud support (AWS, Azure, GCP), compliance-ready governance, and instant read-only setup.",
+  alternates: { canonical: "/features" },
+};
 
 const features = [
     {
@@ -65,7 +73,7 @@ export default function FeaturesPage() {
                             <div className="bg-primary/10 w-12 h-12 rounded-xl flex items-center justify-center mb-4">
                                 <feature.icon className="h-6 w-6 text-primary" />
                             </div>
-                            <h3 className="text-lg font-bold text-white mb-2">{feature.title}</h3>
+                            <h2 className="text-lg font-bold text-white mb-2">{feature.title}</h2>
                             <p className="text-gray-400 text-sm">{feature.description}</p>
                         </div>
                     ))}

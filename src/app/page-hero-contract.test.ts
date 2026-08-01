@@ -8,54 +8,59 @@ const pageSource = readFileSync(
   join(repoRoot, "src/app/page.tsx"),
   "utf8",
 );
-const heroSource = readFileSync(
-  join(repoRoot, "src/components/hero.tsx"),
+const landingPageSource = readFileSync(
+  join(repoRoot, "src/components/landing/landing-page.tsx"),
+  "utf8",
+);
+const heroCopySource = readFileSync(
+  join(repoRoot, "src/components/landing/hero-copy.tsx"),
   "utf8",
 );
 
-test("landing page keeps the hero isolated in the dedicated Hero component", () => {
+test("landing page is a server component that renders the client LandingPage", () => {
   assert.ok(
-    pageSource.includes('import { Hero } from "@/components/hero";'),
-    "page.tsx should import the dedicated Hero component",
+    pageSource.includes('import { LandingPage } from "@/components/landing/landing-page"'),
+    "page.tsx should import the LandingPage client component",
   );
   assert.ok(
-    pageSource.includes('import { LandingBackground } from "@/components/landing-background";'),
-    "page.tsx should import the shared landing background contract",
+    pageSource.includes("<LandingPage />"),
+    "page.tsx should render the LandingPage component",
   );
   assert.ok(
-    pageSource.includes("<Hero />"),
-    "page.tsx should render the dedicated Hero component",
-  );
-  assert.ok(
-    pageSource.includes("<LandingBackground />"),
-    "page.tsx should keep the shared ambient landing background layer",
-  );
-  assert.ok(
-    !pageSource.includes('"use client";'),
-    "page.tsx should remain a server page instead of a full client shell",
+    !pageSource.includes('"use client"'),
+    "page.tsx should remain a server component for metadata export",
   );
 });
 
-test("landing page still exposes the expected below-the-fold anchors", () => {
-  for (const anchor of ['id="features"', 'id="security"', 'id="docs"', 'id="pricing"']) {
-    assert.ok(
-      pageSource.includes(anchor),
-      `page.tsx should preserve the ${anchor} section anchor`,
-    );
-  }
+test("page.tsx exports metadata with structured data", () => {
+  assert.ok(
+    pageSource.includes("export const metadata"),
+    "page.tsx should export Next.js metadata",
+  );
+  assert.ok(
+    pageSource.includes("application/ld+json"),
+    "page.tsx should include JSON-LD structured data",
+  );
 });
 
-test("hero component owns the stronger premium message and interaction shell", () => {
+test("landing page client component includes core sections", () => {
   assert.ok(
-    heroSource.startsWith('"use client";'),
-    "hero.tsx should stay client-side for pointer interaction",
+    landingPageSource.includes('"use client"'),
+    "landing-page.tsx should be a client component",
   );
   assert.ok(
-    heroSource.includes("See every leak."),
-    "hero headline should keep the sharper enterprise message",
+    landingPageSource.includes("<Hero />"),
+    "landing-page.tsx should render the Hero component",
   );
   assert.ok(
-    heroSource.includes("CloudFinOps command core"),
-    "hero should keep the control-plane composition",
+    landingPageSource.includes("<Footer />"),
+    "landing-page.tsx should render the Footer component",
+  );
+});
+
+test("hero copy includes CloudFinOps definition for AEO", () => {
+  assert.ok(
+    heroCopySource.includes("CloudFinOps is"),
+    "hero-copy.tsx should include a definition sentence for answer engines",
   );
 });

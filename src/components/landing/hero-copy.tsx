@@ -57,7 +57,7 @@ export function HeroCopy() {
                 variants={itemVariants}
                 className="mx-auto mt-8 max-w-2xl text-[17px] leading-[1.6] text-zinc-400 md:text-[19px]"
             >
-                Unified cost intelligence across AWS, Azure, and GCP. Ship infrastructure faster without burning capital. Built by engineers, for engineers.
+                CloudFinOps is an AI-powered cloud cost optimization platform that detects idle resources, eliminates waste, and automates governance across AWS, Azure, and GCP — with read-only, agentless access that sets up in under 5 minutes.
             </motion.p>
 
             <motion.div variants={itemVariants} className="mt-10 flex flex-col justify-center gap-3 sm:flex-row">

@@ -1,5 +1,12 @@
-
+import type { Metadata } from "next";
 import { Shield, Database, Globe, Lock, Cookie, User, Clock, Mail, CheckCircle, Server } from "lucide-react";
+
+export const metadata: Metadata = {
+  title: "Privacy Policy",
+  description:
+    "CloudFinOps privacy policy: how we collect, use, and protect your data. GDPR and DPDP Act 2023 compliant.",
+  alternates: { canonical: "/privacy" },
+};
 
 export default function PrivacyPage() {
     return (

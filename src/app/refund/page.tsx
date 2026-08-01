@@ -1,4 +1,12 @@
+import type { Metadata } from "next";
 import { CreditCard, XCircle, Clock, AlertTriangle, Shield, Mail, CheckCircle } from "lucide-react";
+
+export const metadata: Metadata = {
+  title: "Refund & Cancellation Policy",
+  description:
+    "CloudFinOps refund and cancellation policy. 7-day pilot guarantee, transparent billing, and hassle-free cancellation.",
+  alternates: { canonical: "/refund" },
+};
 
 export default function RefundPage() {
     return (

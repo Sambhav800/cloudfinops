@@ -1,6 +1,13 @@
-
+import type { Metadata } from "next";
 import { Shield, Lock, FileText, CheckCircle, Server, Globe, AlertTriangle, Eye, Database, Cloud } from "lucide-react";
 import Link from "next/link";
+
+export const metadata: Metadata = {
+  title: "Security — Zero-Trust, Read-Only Architecture & Compliance",
+  description:
+    "CloudFinOps Security Center: zero-trust read-only architecture, AES-256-GCM encryption, TLS 1.3, SOC 2 Type II controls, ISO 27001 alignment, GDPR, and DPDP Act compliance.",
+  alternates: { canonical: "/security" },
+};
 
 export default function SecurityPage() {
     return (

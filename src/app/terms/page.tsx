@@ -1,5 +1,12 @@
-
+import type { Metadata } from "next";
 import { FileText, Scale, AlertTriangle, Clock, Shield, Globe, CheckCircle } from "lucide-react";
+
+export const metadata: Metadata = {
+  title: "Terms of Service — Master Subscription Agreement",
+  description:
+    "CloudFinOps Master Subscription Agreement (v2.1). Terms governing use of the platform, data handling, and service commitments.",
+  alternates: { canonical: "/terms" },
+};
 
 export default function TermsPage() {
     return (
