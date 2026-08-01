@@ -262,7 +262,7 @@ test("resources page and table include the Phase 3 badges, columns, and type sum
     assert.ok(resourcesViewSource.includes("resource.cost_label"));
     assert.ok(overviewSource.includes("item.costLabel || valueFormatter(item.cost)"));
     assert.ok(resourcesViewSource.includes("providerStyle.label"));
-    assert.ok(resourcesViewSource.includes("resource.metadata?.tags?.Owner"));
+    assert.ok(resourcesViewSource.includes("resource.tags?.Owner"));
     assert.ok(resourcesViewSource.includes("Resources by Type"));
     assert.ok(resourcesViewSource.includes("Resources by Cloud"));
     assert.ok(resourcesViewSource.includes("const typeCountData ="));

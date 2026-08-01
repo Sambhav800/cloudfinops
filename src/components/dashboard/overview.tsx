@@ -10,8 +10,9 @@ import {
     CartesianGrid,
     Tooltip,
 } from 'recharts';
-import { AlertOctagon, AlertCircle, Database, MapPin, Server, Layers } from 'lucide-react';
+import { AlertOctagon, AlertCircle, Database, MapPin, Server, Layers, ShieldCheck } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { ExcludeResourceModal } from '@/components/dashboard/exclude-resource-modal';
 
 import { formatInrCurrency } from '@/lib/resources/contract';
 
@@ -173,6 +174,7 @@ export function DashboardOverview({
     activeProvider = 'all',
 }: DashboardOverviewProps & { activeProvider?: 'all' | 'aws' | 'azure' | 'gcp' }) {
     const [activeTab, setActiveTab] = useState<InventoryTab>('all');
+    const [shieldingResource, setShieldingResource] = useState<(ResourceItem & { category?: string }) | null>(null);
     const providerCosts =
         ((stats as { providerCosts?: Array<{ provider: string; spend: number }> } | null)?.providerCosts ?? []);
     const filteredStats = activeProvider === 'all'
@@ -488,12 +490,13 @@ export function DashboardOverview({
                         <table className="w-full min-w-[1080px] table-fixed text-left border-collapse">
                             <thead>
                                 <tr className="border-b border-white/10 bg-white/[0.03] text-xs uppercase tracking-wider text-slate-500">
-                                    <th className="w-[30%] p-4 font-medium">Resource</th>
-                                    <th className="w-[12%] p-4 font-medium">Provider</th>
-                                    <th className="w-[22%] p-4 font-medium">Type</th>
-                                    <th className="w-[13%] p-4 font-medium">Region</th>
+                                    <th className="w-[28%] p-4 font-medium">Resource</th>
+                                    <th className="w-[11%] p-4 font-medium">Provider</th>
+                                    <th className="w-[20%] p-4 font-medium">Type</th>
+                                    <th className="w-[12%] p-4 font-medium">Region</th>
                                     <th className="w-[11%] p-4 font-medium">Status</th>
-                                    <th className="w-[12%] p-4 font-medium text-right">Cost Signal</th>
+                                    <th className="w-[11%] p-4 font-medium text-right">Cost Signal</th>
+                                    <th className="w-[7%] p-4 font-medium text-center">Shield</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-white/5 text-sm">
@@ -549,11 +552,28 @@ export function DashboardOverview({
                                             <td className={`p-4 text-right font-mono ${getInventoryCostClass(item.costStatus)}`}>
                                                 {item.costLabel || valueFormatter(item.cost)}
                                             </td>
+                                            <td className="p-4 text-center">
+                                                {item.status !== 'Healthy' && !item.metadata?.excluded ? (
+                                                    <button
+                                                        onClick={() => setShieldingResource(item)}
+                                                        className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-slate-800 px-2 py-1 text-xs text-slate-400 transition-all hover:border-indigo-500/30 hover:bg-indigo-500/10 hover:text-indigo-400"
+                                                        title="Shield from zombie detection"
+                                                    >
+                                                        <ShieldCheck className="h-3 w-3" />
+                                                        <span className="hidden sm:inline">Shield</span>
+                                                    </button>
+                                                ) : item.metadata?.excluded ? (
+                                                    <span className="inline-flex items-center gap-1 rounded-full border border-indigo-500/20 bg-indigo-500/10 px-2 py-0.5 text-[10px] font-medium text-indigo-400">
+                                                        <ShieldCheck className="h-3 w-3" />
+                                                        Shielded
+                                                    </span>
+                                                ) : null}
+                                            </td>
                                         </motion.tr>
                                     );
                                 }) : (
                                     <tr>
-                                        <td colSpan={6} className="p-12 text-center text-slate-500">
+                                        <td colSpan={7} className="p-12 text-center text-slate-500">
                                             <div className="flex flex-col items-center gap-3">
                                                 <div className="p-3 bg-white/5 rounded-full">
                                                     <CheckCircleIcon className="w-8 h-8 text-emerald-500/50" />
@@ -568,6 +588,16 @@ export function DashboardOverview({
                     </div>
                 </div>
             </motion.div>
+
+            {shieldingResource && (
+                <ExcludeResourceModal
+                    resourceName={shieldingResource.name || shieldingResource.id}
+                    cloudResourceId={shieldingResource.id}
+                    integrationId={(shieldingResource.metadata?.integration_id as string) || ""}
+                    provider={shieldingResource.provider || ""}
+                    onClose={() => setShieldingResource(null)}
+                />
+            )}
         </div>
     );
 }

@@ -42,7 +42,7 @@ const VALID_PROVIDERS: ReadonlySet<Provider> = new Set([
 ]);
 
 const NON_COMPLIANT_WASTE_TYPES = new Set(["security_risk", "governance_violation"]);
-const WASTE_WASTE_TYPES = new Set(["orphan_disk", "orphan_nic", "stopped_vm", "deallocated_vm", "waste"]);
+const WASTE_WASTE_TYPES = new Set(["orphan_disk", "orphan_nic", "stopped_vm", "deallocated_vm", "waste", "zombie_ip", "zombie_lb", "old_snapshot"]);
 const COMPLIANCE_VALUES = new Set(["compliant", "non_compliant", "shadow_it"]);
 const NO_DIRECT_CHARGE_SOURCE_VALUES = new Set(["no_direct_charge", "included", "free"]);
 const BILLING_UNAVAILABLE_SOURCE_VALUES = new Set(["billing_unavailable", "pricing_unavailable", "unknown"]);
@@ -182,7 +182,7 @@ function normalizeStatus(rawStatus: unknown, wasteType: string | null): Normaliz
             return "non_compliant";
         }
 
-        if (normalizedWasteType.includes("zombie")) {
+        if (normalizedWasteType.includes("zombie") || normalizedWasteType === "oversized" || normalizedWasteType === "idle") {
             return "zombie";
         }
 
@@ -196,6 +196,8 @@ function normalizeStatus(rawStatus: unknown, wasteType: string | null): Normaliz
         case "active":
             return "healthy";
         case "zombie":
+        case "idle":
+        case "oversized":
             return "zombie";
         case "waste":
             return "waste";

@@ -34,6 +34,7 @@ from ..core.community_pricing_pool import (
     apply_community_estimates,
     contribute_verified_prices,
 )
+from ..exclusions.shield import apply_exclusion_shields, generate_exclusion_suggestions
 from ..core.bill_storage import (
     RawBillStorageError,
     RawBillStorageNotFound,
@@ -2362,6 +2363,15 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                     governance_data=governance_data
                 )
                 
+                # Apply exclusion shields (protect seasonal/DR resources from zombie status)
+                try:
+                    excluded_count, excluded_savings = await apply_exclusion_shields(db, user_id, integration_id)
+                    if excluded_count > 0:
+                        potential_savings = max(0, potential_savings - excluded_savings)
+                    await generate_exclusion_suggestions(db, user_id, integration_id)
+                except Exception as exc_err:
+                    logger.warning("Exclusion shield application failed (non-blocking): %s", exc_err)
+
                 await send_scan_progress(user_id, integration_id, 90, "Finalizing analysis...")
                 logger.info("Azure scan completed: %d resources, $%.2f savings", len(findings), potential_savings)
                 await send_scan_complete(user_id, integration_id, len(findings))
@@ -2764,6 +2774,15 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                 governance_data=gov_data
             )
         
+        # Apply exclusion shields (protect seasonal/DR resources from zombie status)
+        try:
+            excluded_count, excluded_savings = await apply_exclusion_shields(db, user_id, integration_id)
+            if excluded_count > 0:
+                logger.info("Shielded %d resources ($%.2f excluded from savings)", excluded_count, excluded_savings)
+            await generate_exclusion_suggestions(db, user_id, integration_id)
+        except Exception as exc_err:
+            logger.warning("Exclusion shield application failed (non-blocking): %s", exc_err)
+
         await send_scan_progress(user_id, integration_id, 90, "Finalizing analysis...")
         logger.info(f"Scan completed for {integration['name']}: {persisted_resource_count} resources found")
         await send_scan_complete(user_id, integration_id, persisted_resource_count)

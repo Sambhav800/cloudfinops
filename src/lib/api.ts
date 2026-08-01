@@ -43,6 +43,78 @@ function normalizeArchitectureProvider(provider: string): ArchitectureProvider {
     throw new Error(`Invalid architecture provider: ${provider}`);
 }
 
+// --- Resource Exclusion Shield Types ---
+
+export type ExclusionReason = "seasonal" | "disaster_recovery" | "compliance" | "batch_processing" | "other";
+export type ExclusionType = "individual" | "rule";
+export type RuleMatchType = "tag" | "name_pattern" | "service_type" | "region";
+
+export type UsageSchedule = {
+    frequency: "quarterly" | "semi_annual" | "annual" | "custom";
+    description?: string | null;
+    next_expected_active?: string | null;
+};
+
+export type RuleMatch = {
+    match_type: RuleMatchType;
+    tag_key?: string | null;
+    tag_value?: string | null;
+    pattern?: string | null;
+    service_type?: string | null;
+    region?: string | null;
+};
+
+export type ResourceExclusion = {
+    id: string;
+    user_id: string;
+    type: ExclusionType;
+    cloud_resource_id: string | null;
+    integration_id: string | null;
+    resource_name: string | null;
+    provider: string | null;
+    rule_match: RuleMatch | null;
+    reason: ExclusionReason;
+    reason_note: string | null;
+    usage_schedule: UsageSchedule | null;
+    expires_at: string;
+    is_active: boolean;
+    is_expired?: boolean;
+    created_at: string;
+    updated_at: string | null;
+};
+
+export type ExclusionSuggestion = {
+    id: string;
+    user_id: string;
+    cloud_resource_id: string;
+    integration_id: string;
+    resource_name: string;
+    provider: string;
+    suggestion_type: "repeated_zombie" | "seasonal_pattern";
+    consecutive_zombie_scans: number;
+    suggested_reason: string;
+    suggested_schedule: UsageSchedule | null;
+    status: "pending" | "accepted" | "dismissed";
+    created_at: string;
+};
+
+export type ExclusionListResponse = {
+    exclusions: ResourceExclusion[];
+    count: number;
+};
+
+export type ExclusionSuggestionsResponse = {
+    suggestions: ExclusionSuggestion[];
+    count: number;
+};
+
+export type ExclusionStatsResponse = {
+    total_active: number;
+    rules_active: number;
+    expiring_soon: number;
+    pending_suggestions: number;
+};
+
 export type BackendIntegration = {
     id: string;
     provider: string;
@@ -1359,4 +1431,84 @@ export async function generateArchitectureReport(
     } catch (error) {
         return { error: { status: 500, detail: String(error) } };
     }
+}
+
+
+// --- Resource Exclusion Shield API ---
+
+export async function getExclusions(
+    filters?: { type?: string; reason?: string; is_active?: boolean },
+): Promise<ExclusionListResponse | null> {
+    const query: Record<string, BackendQueryValue> = {};
+    if (filters?.type) query.type = filters.type;
+    if (filters?.reason) query.reason = filters.reason;
+    if (filters?.is_active !== undefined) query.is_active = String(filters.is_active);
+    return getBackendJson<ExclusionListResponse>("/api/exclusions", query);
+}
+
+export async function getExclusionStats(): Promise<ExclusionStatsResponse | null> {
+    return getBackendJson<ExclusionStatsResponse>("/api/exclusions/stats");
+}
+
+export async function getExclusionSuggestions(): Promise<ExclusionSuggestionsResponse | null> {
+    return getBackendJson<ExclusionSuggestionsResponse>("/api/exclusions/suggestions");
+}
+
+export async function createExclusion(payload: {
+    cloud_resource_id: string;
+    integration_id: string;
+    resource_name?: string;
+    provider?: string;
+    reason: string;
+    reason_note?: string;
+    usage_schedule?: UsageSchedule;
+    expires_in_days?: number;
+}) {
+    return postBackendJson<{ status: string; exclusion: ResourceExclusion }>(
+        "/api/exclusions",
+        payload as Record<string, unknown>,
+    );
+}
+
+export async function createRuleExclusion(payload: {
+    rule_match: RuleMatch;
+    reason: string;
+    reason_note?: string;
+    usage_schedule?: UsageSchedule;
+    expires_in_days?: number;
+}) {
+    return postBackendJson<{ status: string; exclusion: ResourceExclusion }>(
+        "/api/exclusions/rule",
+        payload as Record<string, unknown>,
+    );
+}
+
+export async function deleteExclusion(exclusionId: string) {
+    return deleteBackendJson(`/api/exclusions/${exclusionId}`);
+}
+
+export async function acceptExclusionSuggestion(
+    suggestionId: string,
+    payload: {
+        cloud_resource_id: string;
+        integration_id: string;
+        resource_name?: string;
+        provider?: string;
+        reason: string;
+        reason_note?: string;
+        usage_schedule?: UsageSchedule;
+        expires_in_days?: number;
+    },
+) {
+    return postBackendJson<{ status: string; exclusion: ResourceExclusion }>(
+        `/api/exclusions/suggestions/${suggestionId}/accept`,
+        payload as Record<string, unknown>,
+    );
+}
+
+export async function dismissExclusionSuggestion(suggestionId: string) {
+    return postBackendJson<{ status: string }>(
+        `/api/exclusions/suggestions/${suggestionId}/dismiss`,
+        {},
+    );
 }

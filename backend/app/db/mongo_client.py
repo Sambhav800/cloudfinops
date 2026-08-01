@@ -248,6 +248,19 @@ class MongoDBClient:
                     "spend_date": {"$type": "string"},
                 },
             )
+
+            await ensure_index("resource_exclusions", [("id", ASCENDING)], unique=True)
+            await ensure_index("resource_exclusions", [("user_id", ASCENDING), ("is_active", ASCENDING)])
+            await ensure_index(
+                "resource_exclusions",
+                [("user_id", ASCENDING), ("cloud_resource_id", ASCENDING), ("integration_id", ASCENDING)],
+                partialFilterExpression={
+                    "cloud_resource_id": {"$type": "string"},
+                    "integration_id": {"$type": "string"},
+                },
+            )
+            await ensure_index("exclusion_suggestions", [("id", ASCENDING)], unique=True)
+            await ensure_index("exclusion_suggestions", [("user_id", ASCENDING), ("status", ASCENDING)])
         except Exception as error:
             logger.warning("Mongo index bootstrap skipped or failed: %s", error)
 
