@@ -82,7 +82,7 @@ export default function PrivacyPage() {
                             </div>
                             <div className="bg-white/5 p-4 rounded-xl border border-white/10">
                                 <strong className="text-white block mb-1">MongoDB</strong>
-                                <span className="text-gray-400 text-sm">Encrypted Metadata Storage (PostgreSQL).</span>
+                                <span className="text-gray-400 text-sm">Encrypted Metadata Storage.</span>
                             </div>
                             <div className="bg-white/5 p-4 rounded-xl border border-white/10">
                                 <strong className="text-white block mb-1">Google Gemini</strong>
@@ -105,7 +105,7 @@ export default function PrivacyPage() {
                             <div className="bg-white/5 p-4 rounded-xl border border-white/10 text-center">
                                 <Server className="h-8 w-8 text-primary mx-auto mb-2" />
                                 <strong className="text-white block mb-1">At Rest</strong>
-                                <span className="text-gray-400 text-sm">ASE-256 Encryption for all db volumes.</span>
+                                <span className="text-gray-400 text-sm">AES-256 Encryption for all db volumes.</span>
                             </div>
                             <div className="bg-white/5 p-4 rounded-xl border border-white/10 text-center">
                                 <Globe className="h-8 w-8 text-blue-400 mx-auto mb-2" />

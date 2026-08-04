@@ -59,6 +59,25 @@ const steps = [
     }
 ];
 
+const breadcrumbJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  itemListElement: [
+    {
+      "@type": "ListItem",
+      position: 1,
+      name: "Home",
+      item: "https://cloudfinops.solutions",
+    },
+    {
+      "@type": "ListItem",
+      position: 2,
+      name: "How It Works",
+      item: "https://cloudfinops.solutions/how-it-works",
+    },
+  ],
+};
+
 const howToJsonLd = {
   "@context": "https://schema.org",
   "@type": "HowTo",
@@ -100,6 +119,10 @@ export default function HowItWorksPage() {
             <script
                 type="application/ld+json"
                 dangerouslySetInnerHTML={{ __html: JSON.stringify(howToJsonLd) }}
+            />
+            <script
+                type="application/ld+json"
+                dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }}
             />
             <div className="mx-auto max-w-5xl px-6 lg:px-8">
                 <div className="text-center mb-16">

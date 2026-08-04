@@ -100,7 +100,8 @@ const organizationJsonLd = {
     {
       "@type": "Person",
       name: "Sambhav Pal",
-      jobTitle: "Founder",
+      jobTitle: "Founder & CEO",
+      sameAs: "https://www.linkedin.com/company/cloudfinops-official/",
     },
   ],
   contactPoint: {
@@ -108,10 +109,26 @@ const organizationJsonLd = {
     email: "sambhav@cloudfinops.solutions",
     contactType: "sales",
   },
+  address: {
+    "@type": "PostalAddress",
+    addressLocality: "Zirakpur",
+    addressRegion: "Punjab",
+    addressCountry: "IN",
+  },
   sameAs: [
     "https://www.linkedin.com/company/cloudfinops-official/",
     "https://github.com/CloudFinOps-Official",
   ],
+  knowsAbout: [
+    "Cloud Cost Optimization",
+    "FinOps",
+    "Cloud Governance",
+    "AWS Cost Management",
+    "Azure Cost Management",
+    "GCP Billing",
+    "Idle Resource Detection",
+  ],
+  areaServed: "Worldwide",
 };
 
 const websiteJsonLd = {
@@ -124,6 +141,7 @@ const websiteJsonLd = {
     "@type": "Organization",
     name: "CloudFinOps",
   },
+  inLanguage: "en",
 };
 
 export default function RootLayout({

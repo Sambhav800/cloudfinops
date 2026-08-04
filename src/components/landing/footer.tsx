@@ -14,6 +14,14 @@ const footerColumns = [
         ],
     },
     {
+        title: "Resources",
+        links: [
+            { label: "Blog", href: "/blog" },
+            { label: "Cloud Cost Guide", href: "/blog/best-cloud-cost-optimization-tools-2026" },
+            { label: "FinOps Framework", href: "/blog/finops-framework-guide-for-startups" },
+        ],
+    },
+    {
         title: "Company",
         links: [
             { label: "About", href: "/about" },
@@ -104,7 +112,7 @@ export function Footer() {
                 </div>
 
                 <div className="mt-16 flex flex-col items-start justify-between gap-4 border-t border-white/[0.06] pt-8 md:flex-row md:items-center">
-                    <p className="text-[12px] text-zinc-600">© 2025 CloudFinOps. All rights reserved.</p>
+                    <p className="text-[12px] text-zinc-600">© 2026 CloudFinOps. All rights reserved.</p>
                     <p className="text-[12px] text-zinc-600">UDYAM-PB-20-0114306 · Made in India</p>
                 </div>
             </div>
