@@ -11,9 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
-RUN pip install --upgrade pip setuptools wheel \
-    && pip install -r requirements.txt \
-    && python -c "from azure.mgmt.resource.resources import ResourceManagementClient; print('Azure SDK OK')"
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir -r requirements.txt \
+    && python -c "from azure.mgmt.resource.resources import ResourceManagementClient; print('Azure SDK OK')" \
+    && python -c "from mcp.server.fastmcp import FastMCP; print('MCP FastMCP OK')"
 
 COPY . ./
 
