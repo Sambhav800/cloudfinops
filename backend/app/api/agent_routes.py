@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 agent_router = APIRouter(prefix="/api/agent", tags=["AI Agent"])
 
-USD_TO_INR_RATE = 85.5
+USD_TO_INR_RATE = 95.19
 
 
 class ChatRequest(BaseModel):

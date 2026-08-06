@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_REPORT_CADENCE = "weekly"
 DISPLAY_CURRENCY = "INR"
-DEFAULT_USD_TO_INR_RATE = 85.5
+DEFAULT_USD_TO_INR_RATE = 95.19
 DEFAULT_FINANCE_ALERT_THRESHOLDS = {
     "warning_pct": 80.0,
     "critical_pct": 100.0,

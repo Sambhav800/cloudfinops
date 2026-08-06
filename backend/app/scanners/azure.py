@@ -75,7 +75,7 @@ class AzureWasteScanner:
     # costs in the subscription's billing currency
     CURRENCY_TO_USD: Dict[str, float] = {
         "USD": 1.0,
-        "INR": 0.0117,  # 1 INR ≈ $0.0117 (1 USD = 85.5 INR)
+        "INR": 0.01051, # 1 INR ≈ $0.01051 (1 USD = 95.19 INR)
         "EUR": 1.08,
         "GBP": 1.27,
         "JPY": 0.0067,
