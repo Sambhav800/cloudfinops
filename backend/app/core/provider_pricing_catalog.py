@@ -205,6 +205,14 @@ class ProviderPricingCatalog:
                     skipped_actual += 1
                     continue
 
+                # Don't estimate cost for resources that the scanner confirmed have
+                # no billing (e.g. deallocated VMs). The scanner already queried
+                # Azure Cost Management and found $0 for this resource.
+                status = _lower(resource.get("status"))
+                if cost_source == "billing_unavailable" and status in {"waste", "stopped", "deallocated"}:
+                    skipped_actual += 1
+                    continue
+
                 estimate = await self.estimate_resource_monthly_cost(db, resource)
                 if estimate is None:
                     unmatched += 1

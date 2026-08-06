@@ -133,9 +133,9 @@ test("gcp catalog estimates use stored provider-catalog currency before rupee di
         },
     });
 
-    assert.equal(toDisplayInrAmount(5.548, "USD"), 460.48);
+    assert.equal(toDisplayInrAmount(5.548, "USD"), 474.35);
     assert.equal(catalogEstimate.cost_status, "catalog_estimate");
-    assert.equal(catalogEstimate.cost, 460.48);
+    assert.equal(catalogEstimate.cost, 474.35);
     assert.equal(catalogEstimate.cost_label, "Catalog/mo est. ₹460.48");
     assert.equal(catalogEstimate.monthly_cost_available, false);
 });

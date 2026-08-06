@@ -50,7 +50,7 @@ const CATALOG_ESTIMATE_SOURCE_VALUES = new Set(["catalog_estimate", "estimated"]
 const RESOURCE_LEVEL_COST_UNAVAILABLE_LABEL = "No resource-level cost match";
 export const DISPLAY_CURRENCY = "INR";
 export const DISPLAY_LOCALE = "en-IN";
-const DEFAULT_USD_TO_INR_RATE = 83;
+const DEFAULT_USD_TO_INR_RATE = 85.5;
 const NO_DIRECT_CHARGE_SERVICE_PATTERNS = [
     "gcp service",
     "gcp route",
