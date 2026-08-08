@@ -6,21 +6,21 @@
 /** Waste grade letter from the backend heuristic (savings% of total spend). */
 export type WasteGrade = "A" | "B" | "C" | "D" | "F";
 
-/** A single top-level finding teaser — resource IDs and fix steps are redacted. */
+/** A single finding teaser with real insights — resource IDs and fix scripts are locked. */
 export interface FindingTeaser {
-  /** Service / product name (e.g. "Amazon EC2", "Azure Blob Storage"). */
   service: string;
-  /** Truncated description of the waste pattern. No raw evidence rows. */
+  cost: number;
+  pct_of_total: number;
   what_we_found: string;
-  /** High-level infrastructure category (Compute, Storage, Networking, …). */
+  optimization_options: string;
+  risk_level: "high" | "medium" | "low";
   category: string;
-  /** Estimated monthly cost impact in `currency` units. */
   estimated_impact: number;
 }
 
 /**
- * Redacted payload returned by `POST /api/scan/public-upload`.
- * Full details (resource IDs, scripts, all findings) require an account.
+ * Enriched payload returned by `POST /api/scan/public-upload`.
+ * Shows real analysis value — locks remediation scripts and resource IDs behind signup.
  */
 export interface TeaserReportPayload {
   provider_detected: "aws" | "azure" | "gcp" | "generic";
@@ -31,11 +31,24 @@ export interface TeaserReportPayload {
   waste_grade_label: string;
   estimated_monthly_savings_min: number;
   estimated_monthly_savings_max: number;
-  /** Top 3 findings only — no evidence_lines, no how_to_fix. */
   top_findings_teaser: FindingTeaser[];
-  /** Always "SIGNUP_REQUIRED" — signals the paywall in the frontend. */
   remediation_status: "SIGNUP_REQUIRED";
   rows_parsed: number;
+  total_services_detected: number;
+  services_above_5pct: number;
+  cost_concentration_top3_pct: number;
+  cloudfront_insights?: {
+    total_cost?: number;
+    cache_hit_opportunity?: string;
+    top_recommendation?: string;
+  };
+  gpu_insights?: {
+    total_gpu_cost?: number;
+    instance_types_detected?: string[];
+    spot_savings_opportunity?: number;
+  };
+  existing_credits_detected: number;
+  analysis_depth: string;
 }
 
 /** All possible states the page can be in. */

@@ -4086,15 +4086,81 @@ def _compute_waste_grade(savings_amount: float, total_spend: float) -> tuple[str
     return "F", "Critical — severe overspend detected"
 
 
+def _generate_service_insight(service_name: str, cost: float, total_spend: float, provider: str) -> dict[str, str]:
+    """Generate specific, actionable insight for a service based on provider patterns."""
+    pct_of_total = (cost / total_spend * 100) if total_spend > 0 else 0
+    svc_lower = service_name.lower()
+
+    # Provider-specific optimization insights
+    if "ec2" in svc_lower or "virtual machine" in svc_lower or "compute engine" in svc_lower:
+        return {
+            "insight": f"Compute ({pct_of_total:.0f}% of spend). Industry data shows 25-40% of VM costs go to idle or over-provisioned instances. Rightsizing and scheduling alone can recover 20-30%.",
+            "optimization": "Autoscaling, Reserved/Committed capacity, Spot instances for fault-tolerant workloads",
+            "risk_level": "high" if pct_of_total > 30 else "medium",
+        }
+    elif "rds" in svc_lower or "sql" in svc_lower or "database" in svc_lower or "cosmos" in svc_lower:
+        return {
+            "insight": f"Database ({pct_of_total:.0f}% of spend). Managed DB instances are commonly over-provisioned by 2-4x. Check DTU/vCore utilization and storage auto-growth settings.",
+            "optimization": "Rightsizing based on peak DTU usage, Reserved capacity for stable workloads, Auto-pause for dev/test",
+            "risk_level": "high" if pct_of_total > 20 else "medium",
+        }
+    elif "s3" in svc_lower or "storage" in svc_lower or "blob" in svc_lower:
+        return {
+            "insight": f"Storage ({pct_of_total:.0f}% of spend). Lifecycle policies and intelligent tiering can reduce storage costs 40-70% for infrequently accessed data.",
+            "optimization": "Lifecycle rules to move to cool/archive tiers, Delete orphaned snapshots, Compress objects",
+            "risk_level": "medium",
+        }
+    elif "data transfer" in svc_lower or "bandwidth" in svc_lower or "egress" in svc_lower:
+        return {
+            "insight": f"Data Transfer ({pct_of_total:.0f}% of spend). Often the most overlooked cost — CDN, VPC endpoints, and regional placement can cut egress 50-80%.",
+            "optimization": "CloudFront/CDN for repeated access, VPC endpoints for AWS service traffic, Same-region placement",
+            "risk_level": "high" if pct_of_total > 15 else "medium",
+        }
+    elif "lambda" in svc_lower or "functions" in svc_lower:
+        return {
+            "insight": f"Serverless Functions ({pct_of_total:.0f}% of spend). Memory over-allocation and cold starts drive costs up. Power-tuning can reduce spend 20-40%.",
+            "optimization": "AWS Lambda Power Tuning, Provisioned concurrency for latency-sensitive paths, ARM64 (Graviton)",
+            "risk_level": "low",
+        }
+    elif "cloudfront" in svc_lower or "cdn" in svc_lower or "front door" in svc_lower:
+        return {
+            "insight": f"CDN ({pct_of_total:.0f}% of spend). Cache hit ratio below 90% means origin servers handle excess traffic. Optimizing cache policies reduces both CDN and origin costs.",
+            "optimization": "Increase cache TTL, Compress responses, Use origin shield, Negotiate committed pricing",
+            "risk_level": "medium",
+        }
+    elif "eks" in svc_lower or "aks" in svc_lower or "gke" in svc_lower or "kubernetes" in svc_lower:
+        return {
+            "insight": f"Kubernetes ({pct_of_total:.0f}% of spend). Container orchestration overhead averages 20-35% waste from over-provisioned node pools and idle namespaces.",
+            "optimization": "Cluster autoscaler, Spot/preemptible node pools, VPA for pod rightsizing, Karpenter",
+            "risk_level": "high" if pct_of_total > 25 else "medium",
+        }
+    elif "nat" in svc_lower or "gateway" in svc_lower:
+        return {
+            "insight": f"NAT/Gateway ({pct_of_total:.0f}% of spend). NAT Gateway data processing charges compound fast. VPC endpoints for S3/DynamoDB eliminate most NAT traffic.",
+            "optimization": "S3 Gateway Endpoint ($0 vs $0.045/GB), Interface endpoints for frequent AWS services",
+            "risk_level": "medium",
+        }
+    elif "elasticache" in svc_lower or "redis" in svc_lower or "memorydb" in svc_lower:
+        return {
+            "insight": f"Caching ({pct_of_total:.0f}% of spend). In-memory caches are often sized for peak that occurs briefly. Reserved nodes save 30-55% for stable cache clusters.",
+            "optimization": "Reserved nodes (1yr = 30% off), Graviton instances (20% better price-performance), Data tiering",
+            "risk_level": "medium",
+        }
+    else:
+        return {
+            "insight": f"{service_name} ({pct_of_total:.0f}% of spend). This service represents a notable portion of your cloud bill.",
+            "optimization": "Review utilization metrics, check for unused or idle resources, evaluate commitment discounts",
+            "risk_level": "low" if pct_of_total < 10 else "medium",
+        }
+
+
 def _redact_and_build_teaser(raw: dict[str, Any], rows_parsed: int) -> dict[str, Any]:
     """
-    Apply the spec §3 redaction map and return the public teaser payload.
+    Build an enriched public teaser from the parsed bill data.
 
-    Strips:
-    - evidence_lines / raw source strings
-    - how_to_fix arrays and remediation scripts
-    - complete cross-cloud tables
-    - resource IDs
+    Shows real insights and value — locks only remediation scripts and resource IDs.
+    Philosophy: give enough analysis that prospects see CloudFinOps understands their bill
+    better than they do, then convert with "connect your account for continuous monitoring."
     """
     total_spend = float(raw.get("total_spend") or 0)
     savings_amount = float(raw.get("savings_amount") or raw.get("existing_credits_and_savings") or 0)
@@ -4105,39 +4171,68 @@ def _redact_and_build_teaser(raw: dict[str, Any], rows_parsed: int) -> dict[str,
     waste_grade, waste_grade_label = _compute_waste_grade(savings_amount, total_spend)
 
     # Savings range: ±20% band around the detected savings figure.
-    # If no existing savings detected, estimate conservatively from spend.
     if savings_amount > 0:
         savings_min = round(savings_amount * 0.8, 2)
         savings_max = round(savings_amount * 1.2, 2)
     else:
-        # Heuristic: 10–20% of spend is typically recoverable.
         savings_min = round(total_spend * 0.10, 2)
         savings_max = round(total_spend * 0.20, 2)
 
-    # Build top-3 redacted findings from raw_services
+    # Build enriched findings for ALL services (up to 10)
     raw_services: list[dict[str, Any]] = raw.get("raw_services") or []
     top_findings: list[dict[str, Any]] = []
-    for svc in raw_services[:3]:
+    for svc in raw_services[:10]:
         service_name = str(svc.get("service") or svc.get("Service") or "Unknown Service")
         cost = float(svc.get("cost") or svc.get("Cost") or 0)
         category = str(svc.get("category") or "Other")
 
-        # Construct a generic, non-sensitive finding description.
-        what_we_found = (
-            f"{service_name} accounts for a significant portion of your bill. "
-            "Our analysis detected usage patterns that indicate potential optimisation opportunities. "
-            "Sign up to see specific resource IDs, utilisation metrics, and exact fix steps."
-        )
+        if cost <= 0:
+            continue
+
+        insight_data = _generate_service_insight(service_name, cost, total_spend, provider)
+        pct_of_total = (cost / total_spend * 100) if total_spend > 0 else 0
 
         top_findings.append({
             "service": service_name,
-            "what_we_found": what_we_found,
+            "cost": round(cost, 2),
+            "pct_of_total": round(pct_of_total, 1),
             "category": category,
-            "estimated_impact": round(cost * 0.15, 2),  # conservative 15% waste estimate
-            # Fully redacted per spec §3
+            "what_we_found": insight_data["insight"],
+            "optimization_options": insight_data["optimization"],
+            "risk_level": insight_data["risk_level"],
+            "estimated_impact": round(cost * 0.15, 2),
+            # Still locked: specific resource IDs and CLI scripts
             "how_to_fix": "SIGNUP_REQUIRED",
             "evidence_lines": [],
         })
+
+    # Cost concentration analysis
+    top_3_cost = sum(f["cost"] for f in top_findings[:3])
+    concentration_pct = round((top_3_cost / total_spend * 100) if total_spend > 0 else 0, 1)
+
+    # Service count insights
+    total_services = len(raw_services)
+    services_above_5pct = sum(1 for svc in raw_services if float(svc.get("cost", 0)) / max(total_spend, 1) > 0.05)
+
+    # CloudFront deep insights (if available — these are free value)
+    cloudfront_summary = None
+    cf_data = raw.get("cloudfront_insights")
+    if cf_data and isinstance(cf_data, dict):
+        cloudfront_summary = {
+            "total_cost": cf_data.get("total_cost"),
+            "cache_hit_opportunity": cf_data.get("cache_hit_opportunity"),
+            "top_recommendation": cf_data.get("top_recommendation"),
+        }
+
+    # GPU insights (if available)
+    gpu_summary = None
+    gpu_data = raw.get("gpu_insights")
+    if gpu_data and isinstance(gpu_data, dict):
+        gpu_summary = {
+            "total_gpu_cost": gpu_data.get("total_gpu_cost"),
+            "instance_types_detected": gpu_data.get("instance_types_detected"),
+            "spot_savings_opportunity": gpu_data.get("spot_savings_opportunity"),
+        }
 
     return {
         "provider_detected": provider,
@@ -4151,7 +4246,14 @@ def _redact_and_build_teaser(raw: dict[str, Any], rows_parsed: int) -> dict[str,
         "top_findings_teaser": top_findings,
         "remediation_status": "SIGNUP_REQUIRED",
         "rows_parsed": rows_parsed,
-        # client_scripts key intentionally absent (fully redacted)
+        # NEW enriched fields
+        "total_services_detected": total_services,
+        "services_above_5pct": services_above_5pct,
+        "cost_concentration_top3_pct": concentration_pct,
+        "cloudfront_insights": cloudfront_summary,
+        "gpu_insights": gpu_summary,
+        "existing_credits_detected": round(savings_amount, 2),
+        "analysis_depth": "full_parse",
     }
 
 
