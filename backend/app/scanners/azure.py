@@ -389,6 +389,48 @@ class AzureWasteScanner:
                 "error": str(e)
             }
     
+    def _get_vm_metrics_hourly(self, resource_id: str, lookback_days: int = 30) -> Optional[List[float]]:
+        """
+        Fetch hourly CPU metrics for workload pattern analysis.
+
+        Returns a list of hourly CPU average values (up to 720 points for 30 days)
+        ordered chronologically, or None if the fetch fails.
+        """
+        try:
+            end_time = datetime.now(timezone.utc)
+            start_time = end_time - timedelta(days=lookback_days)
+            timespan = (
+                f"{start_time.strftime('%Y-%m-%dT%H:%M:%SZ')}/"
+                f"{end_time.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+            )
+
+            response = self._azure_call(
+                f"Azure VM hourly CPU metrics ({resource_id})",
+                lambda: self.monitor_client.metrics.list(
+                    resource_uri=resource_id,
+                    timespan=timespan,
+                    interval="PT1H",
+                    metricnames="Percentage CPU",
+                    aggregation="Average"
+                ),
+            )
+
+            hourly_values: List[float] = []
+            for metric in response.value:
+                if metric.name.value == "Percentage CPU":
+                    for ts in metric.timeseries:
+                        for data in ts.data:
+                            hourly_values.append(data.average if data.average is not None else 0.0)
+
+            if len(hourly_values) < 48:
+                return None
+
+            return hourly_values
+
+        except Exception as e:
+            logger.debug(f"Hourly metrics fetch failed for {resource_id}: {e}")
+            return None
+
     def _calculate_confidence(
         self,
         avg_cpu: float,
@@ -1256,77 +1298,132 @@ class AzureWasteScanner:
                                     carbon_footprint_kg=carbon
                                 ))
 
-                            # Underutilized: active but significantly over-provisioned
-                            elif utilization_score < 25.0 and days >= 5:
-                                self.findings.append(self._create_finding(
-                                    cloud_resource_id=cloud_resource_id,
-                                    resource_name=resource_name,
-                                    service_type="Virtual Machine",
-                                    cost=monthly_cost,
-                                    status="underutilized",
-                                    waste_type="underutilized",
-                                    waste_reason=(
-                                        f"UNDERUTILIZED: {utilization_summary} over {days} days. "
-                                        f"This {vm_size} is provisioned well beyond what the workload demands. "
-                                        f"Rightsizing to a smaller SKU could save 30-50% without impacting performance."
-                                    ),
-                                    confidence_score=0.75,
-                                    metrics_data=metrics,
-                                    region=region,
-                                    tags=tags,
-                                    metadata={**enriched_metadata, "rightsizing": True},
-                                    governance_violations=[],
-                                    carbon_footprint_kg=carbon
-                                ))
+                            # === WORKLOAD PATTERN ANALYSIS ===
+                            # For all non-zombie running VMs, fetch 30-day hourly metrics
+                            # and classify the workload pattern for intelligent recommendations.
+                            elif days >= 5:
+                                from ..core.workload_patterns import (
+                                    MetricTimeSeries,
+                                    classify_pattern,
+                                    generate_recommendation,
+                                    WorkloadPattern,
+                                    RecommendationType,
+                                )
 
-                            # Moderate utilization: functional but room to optimize
-                            elif utilization_score < 50.0 and days >= 5:
-                                self.findings.append(self._create_finding(
-                                    cloud_resource_id=cloud_resource_id,
-                                    resource_name=resource_name,
-                                    service_type="Virtual Machine",
-                                    cost=monthly_cost,
-                                    status="moderate",
-                                    waste_type=None,
-                                    waste_reason=(
-                                        f"MODERATE UTILIZATION: {utilization_summary} over {days} days. "
-                                        f"Workload is active but capacity headroom is high. "
-                                        f"Consider rightsizing or consolidating with other workloads."
-                                    ),
-                                    confidence_score=0.0,
-                                    metrics_data=metrics,
-                                    region=region,
-                                    tags=tags,
-                                    metadata=enriched_metadata,
-                                    governance_violations=[],
-                                    carbon_footprint_kg=carbon
-                                ))
+                                hourly_data = self._get_vm_metrics_hourly(vm.id, lookback_days=30)
+                                pattern_metadata = {**enriched_metadata}
 
-                            # Well-utilized or batch workload
-                            else:
-                                is_bursty = (avg_cpu < 20.0 and max_cpu and max_cpu > 50.0)
-                                pattern_note = "Bursty/batch pattern detected" if is_bursty else None
+                                if hourly_data and len(hourly_data) >= 48:
+                                    series = MetricTimeSeries(hourly_values=hourly_data, metric_name="cpu")
+                                    analysis = classify_pattern(series)
+                                    vm_vcpus = int(vm_size.split("_")[-1].replace("s", "").replace("d", "")) if "_" in vm_size else 2
+                                    rec = generate_recommendation(
+                                        analysis,
+                                        current_vm_size=vm_size,
+                                        current_monthly_cost=monthly_cost,
+                                        current_vm_vcpus=max(vm_vcpus, 1),
+                                    )
 
-                                self.findings.append(self._create_finding(
-                                    cloud_resource_id=cloud_resource_id,
-                                    resource_name=resource_name,
-                                    service_type="Virtual Machine",
-                                    cost=monthly_cost,
-                                    status="healthy",
-                                    waste_type=None,
-                                    waste_reason=(
-                                        f"WELL-UTILIZED: {utilization_summary} over {days} days. "
-                                        f"{'Bursty workload pattern — low average but high peaks. ' if is_bursty else ''}"
-                                        f"Resource is appropriately sized for its workload."
-                                    ),
-                                    confidence_score=0.0,
-                                    metrics_data=metrics,
-                                    region=region,
-                                    tags=tags,
-                                    metadata={**enriched_metadata, "workload_pattern": "bursty" if is_bursty else "steady"},
-                                    governance_violations=[],
-                                    carbon_footprint_kg=carbon
-                                ))
+                                    pattern_metadata["workload_pattern"] = analysis.pattern.value
+                                    pattern_metadata["peak_trough_ratio"] = analysis.peak_trough_ratio
+                                    pattern_metadata["peak_avg_cpu"] = analysis.peak_avg
+                                    pattern_metadata["trough_avg_cpu"] = analysis.trough_avg
+                                    pattern_metadata["p90_cpu"] = analysis.p90
+                                    pattern_metadata["p95_cpu"] = analysis.p95
+                                    pattern_metadata["observation_days"] = analysis.observation_days
+                                    pattern_metadata["recommendation_type"] = rec.type.value
+                                    pattern_metadata["recommendation_explanation"] = rec.explanation
+                                    pattern_metadata["estimated_savings_pct"] = rec.estimated_savings_pct
+                                    pattern_metadata["pattern_confidence"] = rec.confidence
+
+                                    if rec.autoscale:
+                                        pattern_metadata["autoscale_min_instances"] = rec.autoscale.min_instances
+                                        pattern_metadata["autoscale_max_instances"] = rec.autoscale.max_instances
+                                        pattern_metadata["autoscale_scale_out_cpu"] = rec.autoscale.scale_out_cpu_pct
+                                        pattern_metadata["autoscale_scale_in_cpu"] = rec.autoscale.scale_in_cpu_pct
+                                        pattern_metadata["autoscale_cooldown_min"] = rec.autoscale.cooldown_minutes
+
+                                    if rec.schedule:
+                                        pattern_metadata["schedule_stop_days"] = rec.schedule.stop_days
+                                        pattern_metadata["schedule_savings_pct"] = rec.schedule.estimated_savings_pct
+
+                                    # Determine status based on recommendation
+                                    if rec.type == RecommendationType.AUTOSCALE:
+                                        status_val = "underutilized"
+                                        waste_type_val = "autoscale_candidate"
+                                    elif rec.type == RecommendationType.SCHEDULE:
+                                        status_val = "underutilized"
+                                        waste_type_val = "schedule_candidate"
+                                    elif rec.type == RecommendationType.RIGHTSIZE:
+                                        status_val = "underutilized"
+                                        waste_type_val = "underutilized"
+                                    elif rec.type == RecommendationType.SPOT_CANDIDATE:
+                                        status_val = "underutilized"
+                                        waste_type_val = "spot_candidate"
+                                    else:
+                                        status_val = "healthy"
+                                        waste_type_val = None
+
+                                    self.findings.append(self._create_finding(
+                                        cloud_resource_id=cloud_resource_id,
+                                        resource_name=resource_name,
+                                        service_type="Virtual Machine",
+                                        cost=monthly_cost,
+                                        status=status_val,
+                                        waste_type=waste_type_val,
+                                        waste_reason=rec.explanation,
+                                        confidence_score=rec.confidence,
+                                        metrics_data=metrics,
+                                        region=region,
+                                        tags=tags,
+                                        metadata=pattern_metadata,
+                                        governance_violations=[],
+                                        carbon_footprint_kg=carbon
+                                    ))
+
+                                else:
+                                    # Fallback: no hourly data, use simple threshold
+                                    if utilization_score < 25.0:
+                                        self.findings.append(self._create_finding(
+                                            cloud_resource_id=cloud_resource_id,
+                                            resource_name=resource_name,
+                                            service_type="Virtual Machine",
+                                            cost=monthly_cost,
+                                            status="underutilized",
+                                            waste_type="underutilized",
+                                            waste_reason=(
+                                                f"UNDERUTILIZED: {utilization_summary} over {days} days. "
+                                                f"Hourly pattern data unavailable — based on daily averages, "
+                                                f"this {vm_size} appears over-provisioned."
+                                            ),
+                                            confidence_score=0.6,
+                                            metrics_data=metrics,
+                                            region=region,
+                                            tags=tags,
+                                            metadata={**enriched_metadata, "workload_pattern": "unknown"},
+                                            governance_violations=[],
+                                            carbon_footprint_kg=carbon
+                                        ))
+                                    else:
+                                        self.findings.append(self._create_finding(
+                                            cloud_resource_id=cloud_resource_id,
+                                            resource_name=resource_name,
+                                            service_type="Virtual Machine",
+                                            cost=monthly_cost,
+                                            status="healthy",
+                                            waste_type=None,
+                                            waste_reason=(
+                                                f"ACTIVE: {utilization_summary} over {days} days. "
+                                                f"Resource is utilized within acceptable range."
+                                            ),
+                                            confidence_score=0.0,
+                                            metrics_data=metrics,
+                                            region=region,
+                                            tags=tags,
+                                            metadata={**enriched_metadata, "workload_pattern": "unknown"},
+                                            governance_violations=[],
+                                            carbon_footprint_kg=carbon
+                                        ))
                     else:
                         # Unknown power state
                         self.findings.append(self._create_finding(
