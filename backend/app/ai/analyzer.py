@@ -970,50 +970,57 @@ Return ONLY valid JSON."""
             savings = cost
             bounded_cost = self._bounded_real_savings(resource, cost)
             
-            # EC2: Stopped instances
-            if "ec2" in stype and "instance" in stype and status in ("zombie", "stopped"):
-                is_dev = any(
-                    t in str(tags).lower()
-                    for t in ("dev", "test", "staging", "sandbox")
-                )
-                if not is_dev:
-                    waste_reason = f"EC2 instance '{name}' is stopped with no dev/test tags — likely zombie"
+            is_vm = (
+                ("ec2" in stype and "instance" in stype)
+                or "virtual machine" in stype
+            )
+            is_disk = (
+                "ebs" in stype or "volume" in stype
+                or "managed disk" in stype or "disk" in stype
+            )
+            is_ip = (
+                "elastic ip" in stype or "eip" in stype
+                or "public ip" in stype
+            )
+            is_security = "security group" in stype or "nsg" in stype
+
+            # VMs: Stopped/Zombie
+            if is_vm and status in ("zombie", "waste", "stopped"):
+                waste_reason = resource.get("waste_reason") or f"VM '{name}' is {status} — costing money without delivering value"
+                severity = "high"
+                waste_categories["Zombie VMs"] = waste_categories.get("Zombie VMs", 0) + bounded_cost
+
+            # VMs: Running but idle
+            elif is_vm and status == "active":
+                avg_cpu = metadata.get("avg_cpu_7d") or metadata.get("avg_cpu")
+                if avg_cpu is not None and float(avg_cpu) < 5:
+                    waste_reason = f"VM '{name}' has avg CPU {avg_cpu}% over 7 days — likely idle"
                     severity = "high"
                     waste_categories["Zombie VMs"] = waste_categories.get("Zombie VMs", 0) + bounded_cost
-            
-            # EC2: Running but low CPU
-            elif "ec2" in stype and "instance" in stype and status == "active":
-                avg_cpu = metadata.get("avg_cpu_7d")
-                if avg_cpu is not None and avg_cpu < 10:
-                    waste_reason = f"EC2 '{name}' has avg CPU {avg_cpu}% over 7 days — likely zombie"
-                    severity = "high"
-                    waste_categories["Zombie VMs"] = waste_categories.get("Zombie VMs", 0) + bounded_cost
-            
-            # EBS: Unattached volumes
-            elif "ebs" in stype or "volume" in stype:
+
+            # Disks: Unattached/Orphaned
+            elif is_disk:
                 state = metadata.get("state", "")
-                if status in ("zombie", "waste") or state == "available":
-                    waste_reason = f"EBS volume '{name}' ({metadata.get('size_gb', '?')}GB) is not attached to any instance"
+                if status in ("zombie", "waste") or state in ("available", "Unattached"):
+                    waste_reason = resource.get("waste_reason") or f"Disk '{name}' ({metadata.get('size_gb', '?')}GB) is not attached"
                     severity = "medium"
                     waste_categories["Orphaned Disks"] = waste_categories.get("Orphaned Disks", 0) + bounded_cost
-            
-            # Elastic IPs: Unassociated
-            elif "elastic ip" in stype or "eip" in stype:
+
+            # IPs: Unassociated
+            elif is_ip:
                 if status in ("zombie", "waste") or not metadata.get("association_id"):
-                    waste_reason = f"Elastic IP '{name}' is not associated"
+                    waste_reason = resource.get("waste_reason") or f"Public IP '{name}' is not associated"
                     severity = "medium"
-                    savings = self._bounded_real_savings(resource, cost)
-                    waste_categories["Unused IPs"] = waste_categories.get("Unused IPs", 0) + savings
-            
+                    waste_categories["Unused IPs"] = waste_categories.get("Unused IPs", 0) + bounded_cost
+
             # Security Groups: Overly permissive
-            elif "security group" in stype:
-                rules = metadata.get("rules_count", 0)
+            elif is_security:
                 if metadata.get("has_open_ingress"):
                     waste_reason = f"Security group '{name}' has 0.0.0.0/0 ingress — security risk"
                     severity = "critical"
                     savings = 0
-            
-            # Generic: scanner already flagged
+
+            # Generic: scanner already flagged as waste/zombie
             elif status in ("zombie", "waste"):
                 waste_reason = resource.get("waste_reason", f"Resource '{name}' flagged as {status}")
                 waste_categories["Other Waste"] = waste_categories.get("Other Waste", 0) + bounded_cost

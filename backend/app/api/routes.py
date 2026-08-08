@@ -2123,7 +2123,22 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                     total_spend = ai_stats.get("total_spend", sum(f.get("cost", 0) for f in findings))
                 
                 potential_savings = ai_stats.get("potential_savings", 0)
-                
+
+                # Deterministic savings fallback: if AI returned 0 savings but
+                # the scanner found waste resources with real billing, sum their costs.
+                if potential_savings <= 0:
+                    deterministic_savings = 0.0
+                    for f in findings:
+                        f_status = str(f.get("status") or "").lower()
+                        f_meta = f.get("metadata") or {}
+                        f_source = str(f_meta.get("cost_source") or "").lower()
+                        f_cost = float(f.get("cost") or 0)
+                        if f_status in ("zombie", "waste", "stopped") and f_source == "actual" and f_cost > 0:
+                            deterministic_savings += f_cost
+                    if deterministic_savings > 0:
+                        potential_savings = round(deterministic_savings, 2)
+                        logger.info(f"Using deterministic savings from waste resources: ${potential_savings:.2f}")
+
                 await send_scan_progress(user_id, integration_id, 70, "Updating dashboard stats...")
                 
                 # Update resource statuses in DB from AI verdicts
@@ -2153,15 +2168,36 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                 await _apply_community_estimates_for_scan(db, user_id, integration_id)
                 await _contribute_community_prices_for_scan(db, user_id, db_resources)
 
-                # Update dashboard stats with AI numbers
+                # Compute confidence and carbon with sane defaults
+                ai_confidence = ai_stats.get("ai_confidence_score", 0)
+                carbon_kg = ai_stats.get("carbon_footprint_kg", 0)
+
+                # If AI didn't produce a confidence score, use a deterministic one
+                # based on how much real billing data we have
+                if ai_confidence <= 0:
+                    billed_count = sum(
+                        1 for f in findings
+                        if str((f.get("metadata") or {}).get("cost_source") or "").lower() == "actual"
+                    )
+                    ai_confidence = min(92, max(60, int(70 + (billed_count / max(len(findings), 1)) * 25)))
+
+                # If carbon wasn't computed, estimate from active resource count
+                if carbon_kg <= 0:
+                    active_count = sum(
+                        1 for f in findings
+                        if str(f.get("status") or "").lower() in ("active", "healthy")
+                    )
+                    carbon_kg = round(active_count * 10.5, 2)
+
+                # Update dashboard stats
                 await db.upsert_dashboard_stats({
                     "user_id": user_id,
                     "integration_id": integration_id,
                     "total_spend": total_spend,
                     "potential_savings": potential_savings,
                     "active_resources_count": dashboard_resource_count,
-                    "ai_confidence_score": ai_stats.get("ai_confidence_score", 0),
-                    "carbon_footprint_kg": ai_stats.get("carbon_footprint_kg", 0),
+                    "ai_confidence_score": ai_confidence,
+                    "carbon_footprint_kg": carbon_kg,
                     "cost_of_inaction_6mo": potential_savings * 6
                 })
                 
