@@ -49,6 +49,22 @@ export interface TeaserReportPayload {
   };
   existing_credits_detected: number;
   analysis_depth: string;
+  annual_waste_so_far?: number;
+  cost_of_waiting_30d?: number;
+  benchmark_percentile?: number;
+  benchmark_label?: string;
+  quick_win?: {
+    title: string;
+    saving_estimate: number;
+    time_required: string;
+    risk: string;
+    description: string;
+  };
+  cross_cloud_hint?: {
+    message: string;
+    provider_compared: string;
+    potential_saving_pct: number;
+  };
 }
 
 /** All possible states the page can be in. */

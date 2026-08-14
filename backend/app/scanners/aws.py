@@ -1109,7 +1109,7 @@ class AWSScanner:
                             'pricing_note': 'Exact per-resource cost requires AWS Cost Explorer RESOURCE_ID billing data.',
                         }
                         
-                        # Fetch 7-day average CPU utilization from CloudWatch
+                        # Fetch 7-day multi-signal metrics from CloudWatch
                         if cw_client and not is_stopped:
                             try:
                                 end_time = datetime.now()
@@ -1133,6 +1133,51 @@ class AWSScanner:
                                     meta['cpu_datapoints'] = 0
                             except Exception:
                                 meta['avg_cpu_7d'] = None
+
+                            # Network In/Out (bytes → MB)
+                            try:
+                                for metric_name, meta_key in [
+                                    ('NetworkIn', 'network_in_mb'),
+                                    ('NetworkOut', 'network_out_mb'),
+                                ]:
+                                    cw_net = cw_client.get_metric_statistics(
+                                        Namespace='AWS/EC2',
+                                        MetricName=metric_name,
+                                        Dimensions=[{'Name': 'InstanceId', 'Value': instance_id}],
+                                        StartTime=start_time,
+                                        EndTime=end_time,
+                                        Period=86400,
+                                        Statistics=['Sum']
+                                    )
+                                    net_dps = cw_net.get('Datapoints', [])
+                                    if net_dps:
+                                        total_bytes = sum(dp['Sum'] for dp in net_dps)
+                                        meta[meta_key] = round(total_bytes / (1024 * 1024), 2)
+                            except Exception:
+                                pass
+
+                            # Disk Read/Write Ops
+                            try:
+                                for metric_name, meta_key in [
+                                    ('DiskReadOps', 'disk_read_ops'),
+                                    ('DiskWriteOps', 'disk_write_ops'),
+                                ]:
+                                    cw_disk = cw_client.get_metric_statistics(
+                                        Namespace='AWS/EC2',
+                                        MetricName=metric_name,
+                                        Dimensions=[{'Name': 'InstanceId', 'Value': instance_id}],
+                                        StartTime=start_time,
+                                        EndTime=end_time,
+                                        Period=86400,
+                                        Statistics=['Sum']
+                                    )
+                                    disk_dps = cw_disk.get('Datapoints', [])
+                                    if disk_dps:
+                                        total_ops = sum(dp['Sum'] for dp in disk_dps)
+                                        avg_daily_ops = total_ops / len(disk_dps)
+                                        meta[meta_key] = round(avg_daily_ops, 2)
+                            except Exception:
+                                pass
 
                         instance_type_lower = str(instance.get('InstanceType', '')).lower()
                         # Expanded GPU detection: P-series (V100/A100/H100), G-series (T4/A10G),

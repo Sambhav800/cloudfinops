@@ -1,6 +1,6 @@
 "use client";
 
-import { TrendingDown, DollarSign, Cloud, BarChart3, Lock, AlertTriangle, Zap, PieChart, ArrowRight } from "lucide-react";
+import { TrendingDown, DollarSign, Cloud, BarChart3, Lock, AlertTriangle, Zap, PieChart, ArrowRight, Clock, Target, Flame, ArrowRightLeft } from "lucide-react";
 import type { TeaserReportPayload, FindingTeaser } from "../types";
 import { WASTE_GRADE_META } from "../constants";
 
@@ -134,6 +134,72 @@ export function TeaserReport({ data, fileName }: TeaserReportProps) {
         </div>
       </div>
 
+      {/* Urgency banner — "you've already burned $X" */}
+      {data.annual_waste_so_far && data.annual_waste_so_far > 0 && (
+        <div className="rounded-2xl border border-rose-500/20 bg-gradient-to-r from-rose-500/10 via-rose-500/5 to-transparent p-5">
+          <div className="flex items-start gap-4">
+            <div className="shrink-0 rounded-xl bg-rose-500/20 p-2.5">
+              <Flame className="h-5 w-5 text-rose-400" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-rose-300">
+                You&apos;ve burned ~{formatCurrency(data.annual_waste_so_far, data.currency)} in waste this year
+              </p>
+              <p className="text-xs text-slate-400 mt-1">
+                Every 30 days you wait costs another {formatCurrency(data.cost_of_waiting_30d ?? 0, data.currency)} in recoverable spend.
+                {data.benchmark_label && (
+                  <span className="text-slate-500"> Your efficiency is {data.benchmark_label}.</span>
+                )}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Free quick win — taste of remediation */}
+      {data.quick_win && (
+        <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <Target className="h-4 w-4 text-emerald-400" />
+            <h3 className="text-sm font-semibold text-white">Free Quick Win</h3>
+            <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
+              {data.quick_win.risk} risk
+            </span>
+          </div>
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-white">{data.quick_win.title}</p>
+              <p className="text-xs text-slate-400 mt-1">{data.quick_win.description}</p>
+              <div className="flex items-center gap-3 mt-2">
+                <span className="flex items-center gap-1 text-xs text-slate-500">
+                  <Clock className="h-3 w-3" /> {data.quick_win.time_required}
+                </span>
+              </div>
+            </div>
+            <div className="shrink-0 text-right">
+              <p className="text-lg font-bold text-emerald-400">
+                {formatCurrency(data.quick_win.saving_estimate, data.currency)}
+              </p>
+              <p className="text-[10px] text-slate-500">/mo savings</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Cross-cloud hint */}
+      {data.cross_cloud_hint && (
+        <div className="rounded-2xl border border-indigo-500/20 bg-indigo-500/5 p-4">
+          <div className="flex items-center gap-3">
+            <ArrowRightLeft className="h-4 w-4 text-indigo-400 shrink-0" />
+            <p className="text-sm text-slate-300">{data.cross_cloud_hint.message}</p>
+            <div className="shrink-0 flex items-center gap-1.5">
+              <Lock className="h-3 w-3 text-slate-500" />
+              <span className="text-[10px] text-slate-500">Full comparison after signup</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Quick insights row */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div className="rounded-xl border border-white/10 bg-slate-900/50 p-4 text-center">
@@ -198,11 +264,11 @@ export function TeaserReport({ data, fileName }: TeaserReportProps) {
             <div className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-amber-400" />
               <h3 className="text-sm font-semibold text-white">
-                Service-Level Analysis
+                Complete Service-Level Analysis
               </h3>
             </div>
             <span className="text-xs text-slate-500">
-              {data.top_findings_teaser.length} services analyzed
+              {data.top_findings_teaser.length} services · sorted by cost impact
             </span>
           </div>
 
