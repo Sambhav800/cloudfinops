@@ -541,7 +541,7 @@ export function CostScoreSection({
                                     </div>
                                 </div>
 
-                                <div className="grid grid-cols-3 gap-2">
+                                <div className="grid grid-cols-2 gap-2">
                                     <div className="min-w-0 rounded-xl border border-white/5 bg-white/5 p-3">
                                         <p className="text-[10px] uppercase tracking-wide text-slate-500">
                                             MTD Actual
@@ -562,25 +562,6 @@ export function CostScoreSection({
                                         </p>
                                         <p className="mt-0.5 text-[10px] text-slate-600">
                                             /month potential
-                                        </p>
-                                    </div>
-                                    <div className="min-w-0 rounded-xl border border-white/5 bg-white/5 p-3">
-                                        <p className="text-[10px] uppercase tracking-wide text-slate-500">
-                                            Score
-                                        </p>
-                                        <p
-                                            className={`mt-1 text-sm font-bold ${
-                                                finOpsScore >= 80
-                                                    ? "text-emerald-400"
-                                                    : finOpsScore >= 50
-                                                      ? "text-amber-400"
-                                                      : "text-rose-400"
-                                            }`}
-                                        >
-                                            {finOpsScore}/100
-                                        </p>
-                                        <p className="mt-0.5 text-[10px] text-slate-600">
-                                            FinOps maturity
                                         </p>
                                     </div>
                                 </div>

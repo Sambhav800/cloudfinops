@@ -10,9 +10,8 @@ import { DashboardOverview } from "@/components/dashboard/overview";
 import { FinOpsInsights } from "@/components/dashboard/finops-insights";
 import { CostScoreSection } from "@/components/dashboard/cost-score-section";
 import { RescanButton } from "@/components/dashboard/rescan-button";
-import {
-    DashboardFinanceSummary,
-    type DashboardFinanceAccountSummary,
+import type {
+    DashboardFinanceAccountSummary,
 } from "@/components/dashboard/dashboard-finance-summary";
 type DashboardOverviewProps = ComponentProps<typeof DashboardOverview>;
 type DashboardStats = Awaited<ReturnType<typeof getDashboardMetrics>>;
@@ -30,10 +29,6 @@ export function DashboardSectionsClient({
     spendData,
     inventory,
     hasConnectedAccounts,
-    portfolioForecast,
-    portfolioBudgetEvent,
-    accountForecasts,
-    financeLoadError,
 }: {
     stats: DashboardStats;
     resources: DashboardOverviewProps["resources"];
@@ -41,9 +36,9 @@ export function DashboardSectionsClient({
     spendData: DashboardOverviewProps["spendData"];
     inventory: DashboardOverviewProps["inventory"];
     hasConnectedAccounts: boolean;
-    portfolioForecast: FinanceForecastResponse | null;
-    portfolioBudgetEvent: FinanceBudgetEvent | null;
-    accountForecasts: DashboardFinanceAccountSummary[];
+    portfolioForecast?: unknown;
+    portfolioBudgetEvent?: unknown;
+    accountForecasts?: unknown[];
     financeLoadError?: string | null;
 }) {
     const [activeProvider, setActiveProvider] = useState<"all" | "aws" | "azure" | "gcp">("all");
@@ -197,13 +192,6 @@ export function DashboardSectionsClient({
                     </div>
                 </div>
             </div>
-
-            <DashboardFinanceSummary
-                portfolioForecast={portfolioForecast}
-                portfolioBudgetEvent={portfolioBudgetEvent}
-                accountForecasts={accountForecasts}
-                loadError={financeLoadError}
-            />
 
             {stats === null ? (
                 <>

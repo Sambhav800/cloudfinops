@@ -1,8 +1,6 @@
 import { getDashboardPageData } from '@/lib/dashboard/data';
 import { DashboardSectionsClient } from '@/components/dashboard/dashboard-sections-client';
-import { DashboardFinanceLoader } from '@/components/dashboard/dashboard-finance-loader';
 import { syncUser } from '@/lib/sync-user';
-import { Suspense } from 'react';
 
 export const dynamic = "force-dynamic";
 
@@ -139,14 +137,6 @@ export default async function DashboardPage() {
                 accountForecasts={[]}
                 financeLoadError={null}
             />
-            <Suspense fallback={
-                <div className="mt-6 rounded-2xl border border-white/5 bg-slate-900/50 p-6 animate-pulse">
-                    <div className="h-6 w-48 bg-slate-800 rounded mb-4" />
-                    <div className="h-40 bg-slate-800/50 rounded" />
-                </div>
-            }>
-                <DashboardFinanceLoader integrations={integrations} />
-            </Suspense>
         </main>
     );
 }
