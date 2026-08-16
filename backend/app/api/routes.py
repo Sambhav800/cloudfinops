@@ -2157,14 +2157,17 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                 carbon_kg = round(active_count * 10.5, 2)
 
                 # Build ai_stats from optimization engine results for downstream compatibility
-                # The optimization engine returns {verdicts, stats, potential_savings, ai_confidence_score}
-                # but downstream code expects {waste_distribution, recommendations, governance_findings, alerts}
+                # The optimization engine returns ResourceVerdict dataclass objects, not dicts.
                 _verdicts = (opt_result or {}).get("verdicts", [])
                 _waste_by_type: dict[str, float] = {}
                 _recommendations: list[dict] = []
                 for _v in _verdicts:
-                    _classification = str(_v.get("classification") or "").lower()
-                    _cost = float(_v.get("monthly_cost") or 0)
+                    _classification = str(getattr(_v, "classification", "") or "").lower()
+                    _cost = float(getattr(_v, "estimated_monthly_waste", 0) or 0)
+                    _resource_id = str(getattr(_v, "resource_id", "") or "")
+                    _recommendation = getattr(_v, "recommendation", None)
+                    _rec_text = str(getattr(_recommendation, "action", "") or "") if _recommendation else "Review and optimize this resource"
+
                     if _classification in ("confirmed_waste", "critical_waste", "likely_waste") and _cost > 0:
                         _cat = {
                             "confirmed_waste": "Zombie Resources",
@@ -2173,10 +2176,10 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                         }.get(_classification, "Other Waste")
                         _waste_by_type[_cat] = _waste_by_type.get(_cat, 0) + _cost
                         _recommendations.append({
-                            "resource_name": _v.get("resource_name", "Unknown"),
-                            "resource_type": _v.get("service_type", "Cloud Resource"),
+                            "resource_name": _resource_id,
+                            "resource_type": "Cloud Resource",
                             "type": "cost_optimization",
-                            "action": _v.get("recommendation") or "Review and optimize this resource",
+                            "action": _rec_text,
                             "potential_savings": _cost,
                             "severity": "high" if _classification == "critical_waste" else "medium",
                         })
