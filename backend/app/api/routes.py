@@ -2157,7 +2157,40 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                 carbon_kg = round(active_count * 10.5, 2)
 
                 # Build ai_stats from optimization engine results for downstream compatibility
-                ai_stats = opt_result or {}
+                # The optimization engine returns {verdicts, stats, potential_savings, ai_confidence_score}
+                # but downstream code expects {waste_distribution, recommendations, governance_findings, alerts}
+                _verdicts = (opt_result or {}).get("verdicts", [])
+                _waste_by_type: dict[str, float] = {}
+                _recommendations: list[dict] = []
+                for _v in _verdicts:
+                    _classification = str(_v.get("classification") or "").lower()
+                    _cost = float(_v.get("monthly_cost") or 0)
+                    if _classification in ("confirmed_waste", "critical_waste", "likely_waste") and _cost > 0:
+                        _cat = {
+                            "confirmed_waste": "Zombie Resources",
+                            "critical_waste": "Critical Waste",
+                            "likely_waste": "Idle Resources",
+                        }.get(_classification, "Other Waste")
+                        _waste_by_type[_cat] = _waste_by_type.get(_cat, 0) + _cost
+                        _recommendations.append({
+                            "resource_name": _v.get("resource_name", "Unknown"),
+                            "resource_type": _v.get("service_type", "Cloud Resource"),
+                            "type": "cost_optimization",
+                            "action": _v.get("recommendation") or "Review and optimize this resource",
+                            "potential_savings": _cost,
+                            "severity": "high" if _classification == "critical_waste" else "medium",
+                        })
+
+                ai_stats = {
+                    **(opt_result or {}),
+                    "waste_distribution": [
+                        {"category_name": k, "value": round(v, 2)}
+                        for k, v in _waste_by_type.items()
+                    ],
+                    "recommendations": sorted(_recommendations, key=lambda x: x.get("potential_savings", 0), reverse=True),
+                    "governance_findings": [],
+                    "alerts": [],
+                }
 
                 # Update dashboard stats
                 await db.upsert_dashboard_stats({
