@@ -2106,9 +2106,18 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                 await send_scan_progress(user_id, integration_id, 68, "Computing savings & confidence...")
 
                 # Use optimization engine results
-                verified = findings  # Original findings (verdicts already persisted by engine)
+                verified = findings
                 potential_savings = opt_result.get("potential_savings", 0)
                 ai_confidence = opt_result.get("ai_confidence_score", 75)
+
+                # Fallback: compute savings from scanner findings if optimization engine found none
+                if potential_savings <= 0:
+                    for f in findings:
+                        f_status = str(f.get("status") or "").lower()
+                        f_cost = float(f.get("cost") or 0)
+                        if f_status in ("waste", "zombie", "underutilized") and f_cost > 0:
+                            potential_savings += f_cost
+                    potential_savings = round(potential_savings, 2)
 
                 # Use REAL subscription cost if available
                 scan_summary = getattr(scanner, '_scan_summary', {})
@@ -2207,7 +2216,7 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                     "cost_of_inaction_6mo": potential_savings * 6
                 })
 
-                # Save daily spend history
+                # Save daily spend history (only if we got real billing data — don't overwrite good data with empty)
                 await send_scan_progress(user_id, integration_id, 73, "Saving spend history...")
 
                 if subscription_costs.get("daily_totals"):
@@ -2218,14 +2227,43 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                         service_breakdown=subscription_costs.get("by_service", {}),
                         currency=subscription_costs.get("currency", "USD")
                     )
+                else:
+                    logger.info("Skipping spend history save — Azure Cost Management returned no data (likely rate-limited)")
 
-                # Update waste distribution from optimization engine
+                # Update waste distribution (only if we have real waste data — don't clear previous good data)
                 if ai_stats.get("waste_distribution"):
                     waste_data = [
                         {**w, "user_id": user_id, "integration_id": integration_id}
                         for w in ai_stats["waste_distribution"]
                     ]
                     await db.upsert_waste_distribution(waste_data)
+                else:
+                    # Build waste_distribution from scanner findings directly when optimization
+                    # engine has no data (Cost Management was rate-limited but scanner still found resources)
+                    scanner_waste: dict[str, float] = {}
+                    for f in findings:
+                        f_status = str(f.get("status") or "").lower()
+                        f_cost = float(f.get("cost") or 0)
+                        f_waste_type = str(f.get("waste_type") or "").lower()
+                        if f_status in ("waste", "zombie", "underutilized") and f_cost > 0:
+                            cat_map = {
+                                "zombie_vm": "Zombie VMs",
+                                "stopped_vm": "Stopped VMs",
+                                "underutilized": "Underutilized Resources",
+                                "orphaned_disk": "Orphaned Disks",
+                                "unused_ip": "Unused IPs",
+                                "autoscale_candidate": "Autoscale Candidates",
+                                "schedule_candidate": "Scheduling Candidates",
+                            }
+                            cat = cat_map.get(f_waste_type, "Other Waste")
+                            scanner_waste[cat] = scanner_waste.get(cat, 0) + f_cost
+                    if scanner_waste:
+                        waste_data = [
+                            {"category_name": k, "value": round(v, 2), "user_id": user_id, "integration_id": integration_id}
+                            for k, v in scanner_waste.items()
+                        ]
+                        await db.upsert_waste_distribution(waste_data)
+                        logger.info(f"Built waste_distribution from scanner findings: {len(waste_data)} categories")
                 
                 # Insert AI recommendations as notifications
                 await send_scan_progress(user_id, integration_id, 85, "Generating AI recommendations...")
