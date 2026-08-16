@@ -2156,6 +2156,9 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                 )
                 carbon_kg = round(active_count * 10.5, 2)
 
+                # Build ai_stats from optimization engine results for downstream compatibility
+                ai_stats = opt_result or {}
+
                 # Update dashboard stats
                 await db.upsert_dashboard_stats({
                     "user_id": user_id,
@@ -2167,10 +2170,10 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                     "carbon_footprint_kg": carbon_kg,
                     "cost_of_inaction_6mo": potential_savings * 6
                 })
-                
+
                 # Save daily spend history
                 await send_scan_progress(user_id, integration_id, 73, "Saving spend history...")
-                
+
                 if subscription_costs.get("daily_totals"):
                     await db.save_daily_spend_history(
                         user_id=user_id,
@@ -2179,8 +2182,8 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                         service_breakdown=subscription_costs.get("by_service", {}),
                         currency=subscription_costs.get("currency", "USD")
                     )
-                
-                # Update waste distribution from AI
+
+                # Update waste distribution from optimization engine
                 if ai_stats.get("waste_distribution"):
                     waste_data = [
                         {**w, "user_id": user_id, "integration_id": integration_id}
