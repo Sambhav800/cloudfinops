@@ -7,7 +7,6 @@ import { ArrowUpRight, Cloud } from "lucide-react";
 import type { getDashboardMetrics } from "@/lib/dashboard/data";
 import type { FinanceBudgetEvent, FinanceForecastResponse } from "@/lib/api";
 import { DashboardOverview } from "@/components/dashboard/overview";
-import { FinOpsInsights } from "@/components/dashboard/finops-insights";
 import { CostScoreSection } from "@/components/dashboard/cost-score-section";
 import { RescanButton } from "@/components/dashboard/rescan-button";
 import type {
@@ -206,7 +205,6 @@ export function DashboardSectionsClient({
                         isLoading
                         activeProvider={activeProvider}
                     />
-                    <FinOpsInsights stats={null} activeProvider={activeProvider} />
                 </>
             ) : hasRenderableStats ? (
                 <>
@@ -220,7 +218,6 @@ export function DashboardSectionsClient({
                         providerCosts={stats.providerCosts || []}
                         activeProvider={activeProvider}
                     />
-                    <FinOpsInsights stats={stats} activeProvider={activeProvider} />
                 </>
             ) : (
                 <div className="mb-8 rounded-2xl border border-white/10 bg-slate-900/50 p-5 text-sm text-slate-400 shadow-2xl shadow-black/20">
