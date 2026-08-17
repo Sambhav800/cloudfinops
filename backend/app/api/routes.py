@@ -2171,11 +2171,16 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                 _waste_by_type: dict[str, float] = {}
                 _recommendations: list[dict] = []
                 for _v in _verdicts:
-                    _classification = str(getattr(_v, "classification", "") or "").lower()
+                    _cls_raw = getattr(_v, "classification", "")
+                    _classification = (getattr(_cls_raw, "value", "") or str(_cls_raw)).lower()
                     _cost = float(getattr(_v, "estimated_monthly_waste", 0) or 0)
                     _resource_id = str(getattr(_v, "resource_id", "") or "")
                     _recommendation = getattr(_v, "recommendation", None)
-                    _rec_text = str(getattr(_recommendation, "action", "") or "") if _recommendation else "Review and optimize this resource"
+                    _rec_text = (
+                        str(getattr(_recommendation, "description", "") or "")
+                        or str(getattr(_recommendation, "action", "") or "")
+                        or "Review and optimize this resource"
+                    ) if _recommendation else "Review and optimize this resource"
 
                     if _classification in ("confirmed_waste", "critical_waste", "likely_waste") and _cost > 0:
                         _cat = {
