@@ -18,6 +18,7 @@ import httpx
 from ..config import GEMINI_API_KEY, GEMINI_AGENT_MODEL
 from ..core.audit import log_audit_event
 from ..core.agent_context import build_agent_system_prompt
+from ..core.gemini_models import resolve_gemini_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +218,8 @@ class CloudFinOpsAgent:
 
     async def _call_gemini(self, contents: list, dynamic_tool_declarations: list, system_prompt: str):
         """Call Gemini REST API (non-streaming)."""
-        url = f"{GEMINI_API_BASE}/models/{GEMINI_AGENT_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        model_name = await resolve_gemini_model_name(GEMINI_AGENT_MODEL, api_key=GEMINI_API_KEY)
+        url = f"{GEMINI_API_BASE}/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
 
         payload = {
             "contents": contents,
@@ -251,7 +253,8 @@ class CloudFinOpsAgent:
 
     async def _stream_gemini(self, contents: list, dynamic_tool_declarations: list, system_prompt: str):
         """Call Gemini REST API (streaming)."""
-        url = f"{GEMINI_API_BASE}/models/{GEMINI_AGENT_MODEL}:streamGenerateContent?key={GEMINI_API_KEY}"
+        model_name = await resolve_gemini_model_name(GEMINI_AGENT_MODEL, api_key=GEMINI_API_KEY)
+        url = f"{GEMINI_API_BASE}/models/{model_name}:streamGenerateContent?key={GEMINI_API_KEY}"
 
         payload = {
             "contents": contents,

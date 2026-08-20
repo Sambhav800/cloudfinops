@@ -334,7 +334,7 @@ def test_upload_bill_uses_gemini_direct_extraction_when_parser_cannot_read_bill(
                 "line_items_detected": 24,
                 "gemini_direct_file": {
                     "status": "extracted",
-                    "model": "gemini-3-flash-preview",
+                    "model": "gemini-3.7-flash",
                     "service_rows_detected": 2,
                 },
             },

@@ -234,6 +234,74 @@ class MongoDBClient:
                 },
             )
             await ensure_index("agent_notifications", [("user_id", ASCENDING), ("created_at", DESCENDING)])
+            await ensure_index("recommendation_ledger", [("id", ASCENDING)], unique=True)
+            await ensure_index(
+                "recommendation_ledger",
+                [("user_id", ASCENDING), ("integration_id", ASCENDING), ("state", ASCENDING)],
+            )
+            await ensure_index(
+                "recommendation_ledger",
+                [("user_id", ASCENDING), ("provider_agreement_status", ASCENDING)],
+            )
+            await ensure_index(
+                "recommendation_ledger",
+                [("user_id", ASCENDING), ("ai_enrichment_status", ASCENDING), ("updated_at", DESCENDING)],
+            )
+            await ensure_index(
+                "recommendation_evidence",
+                [("user_id", ASCENDING), ("recommendation_id", ASCENDING)],
+            )
+            await ensure_index(
+                "recommendation_state_events",
+                [("user_id", ASCENDING), ("recommendation_id", ASCENDING), ("created_at", DESCENDING)],
+            )
+            await ensure_index("recommendation_ai_jobs", [("id", ASCENDING)], unique=True)
+            await ensure_index(
+                "recommendation_ai_jobs",
+                [("user_id", ASCENDING), ("status", ASCENDING), ("priority", DESCENDING), ("queued_at", ASCENDING)],
+            )
+            await ensure_index(
+                "recommendation_ai_jobs",
+                [("user_id", ASCENDING), ("recommendation_id", ASCENDING), ("status", ASCENDING)],
+            )
+            await ensure_index("recommendation_ai_enrichments", [("id", ASCENDING)], unique=True)
+            await ensure_index(
+                "recommendation_ai_enrichments",
+                [("user_id", ASCENDING), ("recommendation_id", ASCENDING)],
+                unique=True,
+                partialFilterExpression={
+                    "user_id": {"$type": "string"},
+                    "recommendation_id": {"$type": "string"},
+                },
+            )
+            await ensure_index("provider_recommendations", [("id", ASCENDING)], unique=True)
+            await ensure_index(
+                "provider_recommendations",
+                [("user_id", ASCENDING), ("integration_id", ASCENDING), ("source_system", ASCENDING)],
+            )
+            await ensure_index("recommendation_savings_verifications", [("id", ASCENDING)], unique=True)
+            await ensure_index(
+                "recommendation_savings_verifications",
+                [("user_id", ASCENDING), ("recommendation_id", ASCENDING)],
+                unique=True,
+                partialFilterExpression={
+                    "user_id": {"$type": "string"},
+                    "recommendation_id": {"$type": "string"},
+                },
+            )
+            await ensure_index(
+                "recommendation_savings_verifications",
+                [("user_id", ASCENDING), ("status", ASCENDING), ("updated_at", DESCENDING)],
+            )
+            await ensure_index("resource_cost_snapshots", [("id", ASCENDING)], unique=True)
+            await ensure_index(
+                "resource_cost_snapshots",
+                [("user_id", ASCENDING), ("integration_id", ASCENDING), ("cloud_resource_id", ASCENDING), ("observed_at", DESCENDING)],
+            )
+            await ensure_index(
+                "resource_cost_snapshots",
+                [("user_id", ASCENDING), ("integration_id", ASCENDING), ("observed_at", DESCENDING)],
+            )
             await ensure_index("reports", [("id", ASCENDING)], unique=True)
             await ensure_index("reports", [("user_id", ASCENDING), ("created_at", DESCENDING)])
             await ensure_index("governance_policies", [("user_id", ASCENDING), ("name", ASCENDING)], unique=True)

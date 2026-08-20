@@ -26,8 +26,11 @@ class FakeBatchSwapDB:
 
     async def bulk_upsert_resources(self, resources, batch_size=50):
         copied = [deepcopy(resource) for resource in resources]
+        for index, resource in enumerate(copied, start=1):
+            resource.setdefault("id", f"persisted-{index}")
         self.operations.append(("bulk_upsert_resources", len(copied)))
         self.bulk_upsert_calls.append((copied, batch_size))
+        self.resources = copied
         return len(resources)
 
     async def delete_resources_for_integration(self, user_id, integration_id, exclude_batch_id=None):
@@ -40,6 +43,12 @@ class FakeBatchSwapDB:
         return True
 
     async def upsert_waste_distribution(self, data):
+        return True
+
+    async def upsert(self, table, data):
+        return data
+
+    async def delete(self, table, filters):
         return True
 
     async def get_resources(self, user_id, integration_id=None):
@@ -77,6 +86,8 @@ class FakeCanonicalizingBatchSwapDB(FakeBatchSwapDB):
                 "integration_id": "aws-integration",
                 "cloud_resource_id": "canonical-shared",
                 "resource_name": "canonical-resource",
+                "service_type": "ec2",
+                "cost": 90.0,
             }
         ]
         return count
@@ -210,7 +221,7 @@ def test_run_scan_inserts_new_aws_batch_before_deleting_old_resources(monkeypatc
 
     asyncio.run(run_scan(integration, "user-1", db))
 
-    assert len(db.bulk_upsert_calls) == 2
+    assert len(db.bulk_upsert_calls) == 1
     first_batch, _ = db.bulk_upsert_calls[0]
     batch_id = first_batch[0]["scan_batch_id"]
 
@@ -270,7 +281,7 @@ def test_run_scan_applies_catalog_estimates_after_resource_writeback(monkeypatch
 
     asyncio.run(run_scan(integration, "user-1", db))
 
-    assert apply_calls == [("user-1", "aws-integration", 500, 2)]
+    assert apply_calls == [("user-1", "aws-integration", 500, 1)]
 
 
 def test_run_scan_stats_use_persisted_resource_count_after_db_canonicalization(monkeypatch):

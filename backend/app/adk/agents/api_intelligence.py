@@ -6,6 +6,8 @@ Detects ghost APIs, cache waste, shadow APIs, and throttle misconfigurations.
 
 from google.adk import Agent
 
+from ...config import DEFAULT_GEMINI_FLASH_MODEL, GEMINI_AGENT_MODEL
+from ...core.gemini_models import is_gemini_auto_model
 from ..tools.api_tools import (
     api_scan_resources,
     api_classify_usage,
@@ -15,9 +17,11 @@ from ..tools.api_tools import (
 from ..tools.memory_tools import recall_learned_patterns, save_learned_pattern
 from ..tools.safety_tools import save_finding_to_state
 
+_ADK_MODEL = DEFAULT_GEMINI_FLASH_MODEL if is_gemini_auto_model(GEMINI_AGENT_MODEL) else GEMINI_AGENT_MODEL
+
 api_intelligence_agent = Agent(
     name="API_Intelligence_Agent",
-    model="gemini-3.5-flash",
+    model=_ADK_MODEL,
     instruction="""You are the API Intelligence Agent for CloudFinOps — an expert in API Gateway architectures, \
 API cost optimization, and API lifecycle management across AWS, Azure, and GCP.
 

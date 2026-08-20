@@ -1,0 +1,11 @@
+{
+  "name": "cloudfinops-pitch-deck",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "node build.js"
+  },
+  "dependencies": {
+    "pptxgenjs": "^3.12.0"
+  }
+}

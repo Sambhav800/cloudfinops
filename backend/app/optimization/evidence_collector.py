@@ -125,6 +125,7 @@ class EvidenceBundle:
     tags: Dict[str, str] = field(default_factory=dict)
     relationships: List[ResourceRelationship] = field(default_factory=list)
     resource_age_days: int = 0
+    resource_age_known: bool = False
     last_state_change: Optional[datetime] = None
 
     # Provider-specific state
@@ -156,7 +157,7 @@ class EvidenceBundle:
     @property
     def is_new_resource(self) -> bool:
         """Resources < 14 days old should not be classified as waste."""
-        return self.resource_age_days < 14
+        return self.resource_age_known and self.resource_age_days < 14
 
     @property
     def signal_count(self) -> int:
@@ -175,6 +176,7 @@ def build_evidence_bundle(
     signals: Dict[str, SignalTimeSeries],
     tags: Optional[Dict[str, str]] = None,
     resource_age_days: int = 0,
+    resource_age_known: Optional[bool] = None,
     monthly_cost: float = 0.0,
     cost_source: str = "unknown",
     resource_name: str = "",
@@ -230,6 +232,7 @@ def build_evidence_bundle(
         signals=signals,
         tags=tags or {},
         resource_age_days=resource_age_days,
+        resource_age_known=(resource_age_days > 0 if resource_age_known is None else resource_age_known),
         monthly_cost=monthly_cost,
         cost_source=cost_source,
         resource_name=resource_name,

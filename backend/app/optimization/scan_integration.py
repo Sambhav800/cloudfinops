@@ -27,6 +27,16 @@ from .feedback_loop import FeedbackProcessor
 from .relationship_graph import ResourceRelationshipGraph
 from .severity import ResourceClassification, ResourceVerdict
 from .temporal_intelligence import detect_extended_patterns
+from ..config import GEMINI_AGENT_MODEL
+from ..core.recommendation_ai_enrichment import enqueue_recommendation_ai_jobs
+from ..core.recommendations import (
+    persist_recommendation_ledger,
+    summarize_recommendation_candidates,
+)
+from ..core.savings_verification import (
+    persist_resource_cost_snapshots,
+    verify_implemented_recommendations_for_integration,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,14 +106,81 @@ async def run_optimization_pipeline(
     # Phase 6: Convert to legacy format for DB writes
     legacy_updates = OptimizationEngine.verdicts_to_legacy_updates(verdicts)
     summary = OptimizationEngine.summary(verdicts)
+    recommendation_summary = summarize_recommendation_candidates(
+        verdicts=verdicts,
+        evidence_bundles=bundles,
+        findings=findings,
+        user_id=user_id,
+        integration_id=integration_id,
+        provider=provider,
+    )
 
-    # Phase 7: Write verdicts back to resources collection
+    # Phase 7: Write verdicts back to resources collection and canonical ledger
+    recommendations_written = 0
+    ai_enrichment_jobs_queued = 0
+    cost_snapshots_written = 0
+    savings_verifications_checked = 0
     if db:
+        if _supports_resource_cost_snapshots(db):
+            try:
+                cost_snapshots_written = await persist_resource_cost_snapshots(
+                    db=db,
+                    findings=findings,
+                    user_id=user_id,
+                    integration_id=integration_id,
+                    provider=provider,
+                )
+            except Exception as error:
+                logger.warning("Resource cost snapshot persistence skipped: %s", error)
+        else:
+            logger.debug("Resource cost snapshot persistence skipped: db client lacks upsert method")
+
         await _persist_verdicts(db, legacy_updates, user_id, integration_id)
+        if _supports_recommendation_ledger(db):
+            try:
+                recommendations_written = await persist_recommendation_ledger(
+                    db=db,
+                    verdicts=verdicts,
+                    evidence_bundles=bundles,
+                    findings=findings,
+                    user_id=user_id,
+                    integration_id=integration_id,
+                    provider=provider,
+                )
+            except Exception as error:
+                logger.warning("Recommendation ledger persistence skipped: %s", error)
+
+            if recommendations_written:
+                try:
+                    queue_summary = await enqueue_recommendation_ai_jobs(
+                        db=db,
+                        user_id=user_id,
+                        integration_id=integration_id,
+                        model=GEMINI_AGENT_MODEL,
+                    )
+                    ai_enrichment_jobs_queued = int(queue_summary.get("queued") or 0)
+                except Exception as error:
+                    logger.warning("Recommendation AI enrichment queueing skipped: %s", error)
+        else:
+            logger.debug("Recommendation ledger persistence skipped: db client lacks ledger methods")
+
+        if _supports_savings_verification(db):
+            try:
+                verification_summary = await verify_implemented_recommendations_for_integration(
+                    db=db,
+                    user_id=user_id,
+                    integration_id=integration_id,
+                )
+                savings_verifications_checked = int(verification_summary.get("checked") or 0)
+            except Exception as error:
+                logger.warning("Savings verification sweep skipped: %s", error)
+        else:
+            logger.debug("Savings verification sweep skipped: db client lacks verification methods")
 
     logger.info(
         f"Optimization pipeline complete: {summary['total_resources']} resources, "
-        f"{summary['total_monthly_waste']:.2f} monthly waste detected, "
+        f"{summary['total_monthly_waste']:.2f} detector estimate, "
+        f"{recommendation_summary['claimable_monthly_savings']:.2f} claimable savings, "
         f"confidence avg={summary['average_confidence']:.2f}"
     )
 
@@ -112,9 +189,34 @@ async def run_optimization_pipeline(
         "legacy_updates": legacy_updates,
         "stats": summary,
         "ai_review_candidates": ai_review_count,
-        "potential_savings": summary["total_monthly_waste"],
-        "ai_confidence_score": _compute_overall_confidence(verdicts),
+        "potential_savings": recommendation_summary["claimable_monthly_savings"],
+        "detected_potential_savings": recommendation_summary["detector_monthly_savings"],
+        "ai_confidence_score": recommendation_summary["confidence_score"],
+        "recommendation_records": recommendation_summary["records"],
+        "recommendation_quality": {
+            key: value
+            for key, value in recommendation_summary.items()
+            if key != "records"
+        },
+        "recommendations_written": recommendations_written,
+        "ai_enrichment_jobs_queued": ai_enrichment_jobs_queued,
+        "cost_snapshots_written": cost_snapshots_written,
+        "savings_verifications_checked": savings_verifications_checked,
     }
+
+
+def _supports_recommendation_ledger(db: Any) -> bool:
+    required_methods = ("select", "upsert", "delete", "insert")
+    return all(callable(getattr(db, method, None)) for method in required_methods)
+
+
+def _supports_resource_cost_snapshots(db: Any) -> bool:
+    return callable(getattr(db, "upsert", None))
+
+
+def _supports_savings_verification(db: Any) -> bool:
+    required_methods = ("select", "upsert", "update")
+    return all(callable(getattr(db, method, None)) for method in required_methods)
 
 
 async def process_user_feedback(
@@ -213,7 +315,8 @@ def _finding_to_evidence_bundle(
         provider_state=state_str,
         signals=signals,
         tags=tags,
-        resource_age_days=resource_age_days,
+        resource_age_days=resource_age_days or 0,
+        resource_age_known=resource_age_days is not None,
         monthly_cost=cost,
         cost_source=cost_source,
         resource_name=finding.get("resource_name", ""),
@@ -399,13 +502,23 @@ def _extract_signals(
     return signals
 
 
-def _compute_resource_age(finding: Dict[str, Any]) -> int:
+def _compute_resource_age(finding: Dict[str, Any]) -> Optional[int]:
     """Compute resource age in days from available metadata."""
-    metadata = finding.get("metadata", {})
+    metadata = finding.get("metadata") if isinstance(finding.get("metadata"), dict) else {}
+    metrics_data = finding.get("metrics_data") if isinstance(finding.get("metrics_data"), dict) else {}
+
+    for source in (metadata, metrics_data, finding):
+        raw_age = source.get("age_days")
+        if raw_age is None:
+            continue
+        try:
+            return max(0, int(float(raw_age)))
+        except (TypeError, ValueError):
+            continue
 
     # Try launch_time / created_at
     for field in ("launch_time", "created_at", "creation_timestamp", "time_created"):
-        value = metadata.get(field)
+        value = metadata.get(field) or metrics_data.get(field) or finding.get(field)
         if value:
             try:
                 if isinstance(value, str):
@@ -425,8 +538,7 @@ def _compute_resource_age(finding: Dict[str, Any]) -> int:
             except Exception:
                 continue
 
-    # Default: assume resource is old enough for classification
-    return 90
+    return None
 
 
 async def _persist_verdicts(
@@ -483,9 +595,9 @@ async def _persist_verdicts(
 
 
 def _compute_overall_confidence(verdicts: List[ResourceVerdict]) -> int:
-    """Compute overall AI confidence score (0-100) for dashboard stats."""
+    """Compute observed recommendation confidence without synthetic defaults."""
     if not verdicts:
-        return 75
+        return 0
 
     waste_verdicts = [
         v for v in verdicts
@@ -498,7 +610,7 @@ def _compute_overall_confidence(verdicts: List[ResourceVerdict]) -> int:
     ]
 
     if not waste_verdicts:
-        return 92  # High confidence when no waste found
+        return 0
 
     avg_conf = sum(v.confidence for v in waste_verdicts) / len(waste_verdicts)
-    return min(98, max(60, int(avg_conf * 100)))
+    return int(round(max(0.0, min(1.0, avg_conf)) * 100))
