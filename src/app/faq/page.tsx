@@ -106,6 +106,12 @@ export default function FAQPage() {
         dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }}
       />
       <div className="mx-auto max-w-4xl px-6 lg:px-8">
+        <nav aria-label="Breadcrumb" className="mb-8">
+          <ol className="flex items-center gap-1.5 text-[13px] text-zinc-500">
+            <li><a href="/" className="hover:text-zinc-300 transition-colors">Home</a></li>
+            <li className="flex items-center gap-1.5"><span className="text-zinc-700">/</span><span className="text-zinc-400">FAQ</span></li>
+          </ol>
+        </nav>
         <div className="text-center mb-16">
           <h1 className="text-4xl font-bold tracking-tight text-white sm:text-5xl mb-4">
             Frequently Asked Questions

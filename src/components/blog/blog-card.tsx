@@ -19,15 +19,16 @@ export function BlogCard({ post }: { post: BlogPostMeta }) {
           {post.excerpt}
         </p>
 
-        <div className="flex items-center justify-between text-[12px] text-zinc-600 mt-auto">
-          <time dateTime={post.publishedAt}>
-            {new Date(post.publishedAt).toLocaleDateString("en-US", {
-              month: "short",
-              day: "numeric",
-              year: "numeric",
-            })}
-          </time>
-          <span>{post.readTime} min read</span>
+        <div className="flex items-center gap-2 mt-auto pt-4 border-t border-white/[0.04]">
+          <div className="w-5 h-5 rounded-full bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center text-[8px] font-bold text-white shrink-0">
+            {post.author.name.split(" ").map((n) => n[0]).join("")}
+          </div>
+          <span className="text-[11px] text-zinc-500 truncate">{post.author.name}</span>
+          <span className="text-[11px] text-zinc-700 ml-auto shrink-0">
+            {new Date(post.publishedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+            {" · "}
+            {post.readTime}m
+          </span>
         </div>
       </article>
     </Link>
