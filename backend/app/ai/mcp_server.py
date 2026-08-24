@@ -489,6 +489,131 @@ async def get_multicloud_comparison(user_id: str) -> dict:
     report = build_multicloud_report(resources, provider)
     return report
 
+@app.tool()
+async def get_bill_analysis_results(user_id: str) -> dict:
+    """
+    Get the user's most recent bill analysis results including spend breakdown by service,
+    waste grade, savings estimates, and top findings. Use when asked about bill analysis,
+    spend breakdown, or 'what did the bill scan find'.
+    """
+    db = get_db_client()
+    analyses = await db.select("bill_analyses", filters={"user_id": user_id})
+    if not analyses:
+        return {"status": "no_analyses", "message": "No bill analyses found. Upload a bill via the Bill Analysis page."}
+
+    latest = sorted(analyses, key=lambda a: a.get("created_at", ""), reverse=True)[0]
+    return {
+        "status": "found",
+        "provider": latest.get("provider", "unknown"),
+        "total_spend": latest.get("total_spend", 0),
+        "currency": latest.get("currency", "USD"),
+        "waste_grade": latest.get("waste_grade", "N/A"),
+        "by_category": latest.get("by_category", {}),
+        "top_services": (latest.get("raw_services") or [])[:10],
+        "savings_estimate": latest.get("savings_amount", 0),
+        "analyzed_at": latest.get("created_at", ""),
+        "rows_parsed": latest.get("rows_parsed", 0),
+    }
+
+
+@app.tool()
+async def get_commitment_recommendations(user_id: str) -> dict:
+    """
+    Get commitment/reservation purchase recommendations (Reserved Instances, Savings Plans,
+    Committed Use Discounts). Use when asked about 'what RIs should I buy', 'savings plans',
+    'commitment coverage', or 'how to reduce costs with commitments'.
+    """
+    db = get_db_client()
+    stats = await db.select("dashboard_stats", filters={"user_id": user_id})
+    integrations = await db.select("cloud_integrations", filters={"user_id": user_id, "status": "active"})
+
+    total_spend = sum(float(s.get("total_spend", 0)) for s in stats)
+    providers = list(set(str(i.get("provider", "")).upper() for i in integrations if i.get("provider")))
+
+    recommendations = []
+    for provider in providers:
+        if provider == "AWS":
+            recommendations.append({
+                "provider": "AWS",
+                "type": "Compute Savings Plan",
+                "description": "1-year No Upfront Compute Savings Plan covers EC2, Fargate, and Lambda usage",
+                "estimated_savings_pct": "20-30%",
+                "commitment_term": "1 year",
+                "flexibility": "Instance family and size flexible across all regions",
+                "risk": "Low — covers any compute usage",
+            })
+        elif provider == "AZURE":
+            recommendations.append({
+                "provider": "Azure",
+                "type": "Azure Savings Plan for Compute",
+                "description": "1-year Azure Savings Plan covers VMs, App Service, and Container Instances",
+                "estimated_savings_pct": "20-30%",
+                "commitment_term": "1 year",
+                "flexibility": "Compute flexible across VM series and regions",
+                "risk": "Low — applies to any Azure compute",
+            })
+        elif provider == "GCP":
+            recommendations.append({
+                "provider": "GCP",
+                "type": "Committed Use Discount (CUD)",
+                "description": "1-year CUD for Compute Engine covers vCPU and memory at committed spend level",
+                "estimated_savings_pct": "20-57%",
+                "commitment_term": "1 or 3 years",
+                "flexibility": "Machine family flexible within same region",
+                "risk": "Medium — locked to machine family + region",
+            })
+
+    return {
+        "total_monthly_spend": round(total_spend, 2),
+        "connected_providers": providers,
+        "recommendations": recommendations,
+        "general_guidance": (
+            "Cover 50-60% of your stable baseline with 1-year commitments. "
+            "Leave variable workloads on on-demand or spot. "
+            "Review coverage quarterly as baselines shift."
+        ),
+    }
+
+
+@app.tool()
+async def get_optimization_recommendations(user_id: str) -> dict:
+    """
+    Get all active optimization recommendations (autoscaling, rightsizing, scheduling, spot candidates).
+    Use when asked about 'what should I optimize', 'recommendations', 'savings opportunities',
+    or 'how to reduce my cloud bill'.
+    """
+    db = get_db_client()
+    notifications = await db.select(
+        "agent_notifications",
+        filters={"user_id": user_id, "status": "pending"},
+    )
+
+    by_type = {}
+    total_savings = 0.0
+    for n in notifications:
+        action_type = n.get("action_type", "review")
+        savings = float(n.get("potential_savings", 0))
+        total_savings += savings
+        by_type.setdefault(action_type, []).append({
+            "resource": n.get("resource_name", "Unknown"),
+            "service_type": n.get("service_type", ""),
+            "action": n.get("action_description", ""),
+            "savings": savings,
+            "severity": n.get("severity", "medium"),
+        })
+
+    return {
+        "total_pending_recommendations": len(notifications),
+        "total_potential_savings": round(total_savings, 2),
+        "by_action_type": {k: len(v) for k, v in by_type.items()},
+        "top_5_by_savings": sorted(
+            [item for items in by_type.values() for item in items],
+            key=lambda x: x["savings"],
+            reverse=True,
+        )[:5],
+    }
+
+
 if __name__ == "__main__":
     logger.info("Starting CloudFinOps FastMCP Server...")
     app.run()
