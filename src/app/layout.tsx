@@ -96,18 +96,26 @@ const organizationJsonLd = {
   description:
     "AI-powered FinOps platform that detects idle cloud resources, reduces waste by up to 30%, and automates governance across AWS, Azure, and GCP.",
   foundingDate: "2025",
-  founders: [
+  founder: [
     {
       "@type": "Person",
       name: "Sambhav Pal",
       jobTitle: "Founder & CEO",
-      sameAs: "https://www.linkedin.com/company/cloudfinops-official/",
+      sameAs: "https://www.linkedin.com/in/sambhav-pal050405/",
+    },
+    {
+      "@type": "Person",
+      name: "Nishant Jain",
+      jobTitle: "Co-Founder & CTO",
+      sameAs: "https://www.linkedin.com/in/nishant-jain-7baa07284/",
     },
   ],
   contactPoint: {
     "@type": "ContactPoint",
     email: "sambhav@cloudfinops.solutions",
     contactType: "sales",
+    areaServed: "Worldwide",
+    availableLanguage: "English",
   },
   address: {
     "@type": "PostalAddress",
@@ -140,6 +148,14 @@ const websiteJsonLd = {
   publisher: {
     "@type": "Organization",
     name: "CloudFinOps",
+  },
+  potentialAction: {
+    "@type": "SearchAction",
+    target: {
+      "@type": "EntryPoint",
+      urlTemplate: `${SITE_URL}/blog?q={search_term_string}`,
+    },
+    "query-input": "required name=search_term_string",
   },
   inLanguage: "en",
 };

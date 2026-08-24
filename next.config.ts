@@ -3,10 +3,21 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   outputFileTracingRoot: path.resolve(__dirname),
+  poweredByHeader: false,
   turbopack: {
     resolveAlias: {
       tailwindcss: path.resolve(__dirname, "node_modules/tailwindcss"),
     },
+  },
+  async redirects() {
+    return [
+      {
+        source: "/:path*",
+        has: [{ type: "host", value: "www.cloudfinops.solutions" }],
+        destination: "https://cloudfinops.solutions/:path*",
+        permanent: true,
+      },
+    ];
   },
   async headers() {
     return [

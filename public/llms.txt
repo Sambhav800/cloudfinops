@@ -1,0 +1,48 @@
+# CloudFinOps
+> AI-powered FinOps platform that detects idle cloud resources, reduces waste by up to 30%, and automates governance across AWS, Azure, and GCP.
+
+## About
+CloudFinOps is a SaaS platform for cloud cost optimization. It provides read-only, agentless scanning of AWS, Azure, and GCP accounts to identify idle resources, rightsizing opportunities, and governance violations. Setup takes under 5 minutes.
+
+## Main Pages
+- Homepage: https://cloudfinops.solutions
+- Features: https://cloudfinops.solutions/features
+- How It Works: https://cloudfinops.solutions/how-it-works
+- Security: https://cloudfinops.solutions/security
+- About: https://cloudfinops.solutions/about
+- Blog: https://cloudfinops.solutions/blog
+- FAQ: https://cloudfinops.solutions/faq
+
+## Free Tools
+- Cloud Audit: https://cloudfinops.solutions/audit
+- Bill Scanner: https://cloudfinops.solutions/bill-scan
+
+## Key Capabilities
+- Multi-cloud waste detection (AWS, Azure, GCP)
+- AI-powered idle resource identification
+- Rightsizing recommendations with cost impact
+- Commitment optimization (Reserved Instances, Savings Plans)
+- Governance automation and compliance reporting
+- Real-time anomaly detection with Holt-Winters forecasting
+- Read-only scanning — no write access required
+
+## Compliance
+- SOC 2 Type II controls
+- ISO 27001 aligned
+- GDPR compliant
+- HIPAA capable
+- TLS 1.3, AES-256-GCM encryption
+
+## Company
+- Founded: 2025
+- Location: Zirakpur, Punjab, India
+- Registration: UDYAM-PB-20-0114306
+- Contact: sambhav@cloudfinops.solutions
+
+## Blog Topics
+- Cloud cost optimization strategies
+- FinOps framework and implementation
+- AWS/Azure/GCP cost management
+- Kubernetes cost optimization
+- Reserved Instances vs Savings Plans
+- Idle resource detection techniques
