@@ -67,29 +67,71 @@ class AWSScanner:
     Identifies zombie resources and calculates potential savings.
     """
     
-    def __init__(self, access_key_id: str, secret_access_key: str, regions: Optional[List[str]] = None):
-        self.access_key_id = access_key_id
-        self.secret_access_key = secret_access_key
-        # If no regions specified, use defaults
+    def __init__(
+        self,
+        access_key_id: str = "",
+        secret_access_key: str = "",
+        regions: Optional[List[str]] = None,
+        role_arn: str = "",
+        external_id: str = "",
+    ):
         self.regions = regions if regions else ALL_AWS_REGIONS
         self.executor = ThreadPoolExecutor(max_workers=10)
         self.access_denied_services = set()
         self.resource_cost_status = "not_checked"
         self.resource_cost_message = ""
-    
+
+        # If role_arn provided, assume it to get temporary credentials
+        if role_arn:
+            assumed = self._assume_role(access_key_id, secret_access_key, role_arn, external_id)
+            self.access_key_id = assumed["AccessKeyId"]
+            self.secret_access_key = assumed["SecretAccessKey"]
+            self._session_token = assumed["SessionToken"]
+        else:
+            self.access_key_id = access_key_id
+            self.secret_access_key = secret_access_key
+            self._session_token = None
+
+    @staticmethod
+    def _assume_role(
+        access_key_id: str,
+        secret_access_key: str,
+        role_arn: str,
+        external_id: str = "",
+    ) -> Dict[str, str]:
+        """Assume an IAM role via STS and return temporary credentials."""
+        sts_kwargs: Dict[str, Any] = {}
+        if access_key_id and secret_access_key:
+            sts_kwargs["aws_access_key_id"] = access_key_id
+            sts_kwargs["aws_secret_access_key"] = secret_access_key
+
+        sts = boto3.client("sts", **sts_kwargs)
+        assume_kwargs: Dict[str, Any] = {
+            "RoleArn": role_arn,
+            "RoleSessionName": "CloudFinOps-Scanner",
+            "DurationSeconds": 3600,
+        }
+        if external_id:
+            assume_kwargs["ExternalId"] = external_id
+
+        response = sts.assume_role(**assume_kwargs)
+        return response["Credentials"]
+
     def _get_client(self, service: str, region: str):
         """Get a boto3 client for a specific service and region with adaptive retries."""
         session = boto3.Session()
-        return session.client(
-            service,
-            aws_access_key_id=self.access_key_id,
-            aws_secret_access_key=self.secret_access_key,
-            config=build_aws_retry_config(
+        kwargs: Dict[str, Any] = {
+            "aws_access_key_id": self.access_key_id,
+            "aws_secret_access_key": self.secret_access_key,
+            "config": build_aws_retry_config(
                 region_name=region,
                 connect_timeout=3,
                 read_timeout=5,
             ),
-        )
+        }
+        if self._session_token:
+            kwargs["aws_session_token"] = self._session_token
+        return session.client(service, **kwargs)
 
     def _handle_scan_error(self, service: str, error: Exception, region: str = None):
         err_str = str(error)

@@ -2130,15 +2130,19 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
             access_key_id = str(credentials.get("access_key_id") or "").strip()
             secret_access_key = str(credentials.get("secret_access_key") or "").strip()
             role_arn = str(credentials.get("role_arn") or "").strip()
-            missing_fields = [
-                field_name
-                for field_name, value in (
-                    ("access_key_id", access_key_id),
-                    ("secret_access_key", secret_access_key),
-                )
-                if not value
-            ]
-            if missing_fields:
+            external_id = str(credentials.get("external_id") or "").strip()
+
+            # Role-based auth: only role_arn required (keys are optional for cross-account)
+            # Key-based auth: both access_key_id and secret_access_key required
+            if not role_arn and (not access_key_id or not secret_access_key):
+                missing_fields = [
+                    field_name
+                    for field_name, value in (
+                        ("access_key_id", access_key_id),
+                        ("secret_access_key", secret_access_key),
+                    )
+                    if not value
+                ]
                 await _abort_corrupted_scan_credentials(
                     provider_label="AWS",
                     integration_id=integration_id,
@@ -2147,17 +2151,15 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                     integration_metadata=integration_metadata,
                     missing_fields=missing_fields,
                     action_label="Reconnect AWS Integration",
-                    extra_detail=(
-                        "Role-only AWS integrations are not supported by this scanner path yet."
-                        if role_arn and (not access_key_id or not secret_access_key)
-                        else None
-                    ),
                 )
                 return
+
             scanner = AWSScanner(
                 access_key_id=access_key_id,
                 secret_access_key=secret_access_key,
-                regions=integration.get("regions")
+                regions=integration.get("regions"),
+                role_arn=role_arn,
+                external_id=external_id,
             )
         elif provider == "azure":
             missing_fields = [
