@@ -10,14 +10,16 @@ export type WasteGrade = "A" | "B" | "C" | "D" | "F";
 /** A single top-level finding teaser — resource IDs and fix steps are redacted. */
 export interface FindingTeaser {
   /** Service / product name (e.g. "Amazon EC2", "Azure Blob Storage"). */
-  service: string;what_we_found: string;
-  /** Truncated description of the waste pattern. No raw evidence rows. */
-  what_we_found: string;  optimization_options: string;
+  service: string;
+  cost: number;
+  pct_of_total: number;
+  /** Description of the waste pattern. */
+  what_we_found: string;
+  optimization_options: string;
   risk_level: "high" | "medium" | "low";
   /** High-level infrastructure category (Compute, Storage, Networking, …). */
   category: string;
   /** Estimated monthly cost impact in `currency` units. */
-
   estimated_impact: number;
 }
 
