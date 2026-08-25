@@ -6,21 +6,26 @@
 /** Waste grade letter from the backend heuristic (savings% of total spend). */
 export type WasteGrade = "A" | "B" | "C" | "D" | "F";
 
-/** A single finding teaser with real insights — resource IDs and fix scripts are locked. */
+
+/** A single top-level finding teaser — resource IDs and fix steps are redacted. */
 export interface FindingTeaser {
-  service: string;
-  cost: number;
-  pct_of_total: number;
-  what_we_found: string;
-  optimization_options: string;
+  /** Service / product name (e.g. "Amazon EC2", "Azure Blob Storage"). */
+  service: string;what_we_found: string;
+  /** Truncated description of the waste pattern. No raw evidence rows. */
+  what_we_found: string;  optimization_options: string;
   risk_level: "high" | "medium" | "low";
+  /** High-level infrastructure category (Compute, Storage, Networking, …). */
   category: string;
+  /** Estimated monthly cost impact in `currency` units. */
+
   estimated_impact: number;
 }
 
 /**
- * Enriched payload returned by `POST /api/scan/public-upload`.
- * Shows real analysis value — locks remediation scripts and resource IDs behind signup.
+
+ * Redacted payload returned by `POST /api/scan/public-upload`.
+ * Full details (resource IDs, scripts, all findings) require an account.
+
  */
 export interface TeaserReportPayload {
   provider_detected: "aws" | "azure" | "gcp" | "generic";
@@ -31,6 +36,7 @@ export interface TeaserReportPayload {
   waste_grade_label: string;
   estimated_monthly_savings_min: number;
   estimated_monthly_savings_max: number;
+
   top_findings_teaser: FindingTeaser[];
   remediation_status: "SIGNUP_REQUIRED";
   rows_parsed: number;
@@ -65,6 +71,7 @@ export interface TeaserReportPayload {
     provider_compared: string;
     potential_saving_pct: number;
   };
+
 }
 
 /** All possible states the page can be in. */

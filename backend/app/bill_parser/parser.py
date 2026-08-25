@@ -77,7 +77,9 @@ def _detect_currency_from_dataframe(df: pd.DataFrame) -> str:
     if not sample_text:
         # fall back: concatenate first-30 rows of the whole frame
         sample_text = " ".join(
+
             str(v) for v in df.head(30).fillna("").values.flatten()
+
         )
 
     sample_lower = sample_text.lower()

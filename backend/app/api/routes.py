@@ -4375,6 +4375,7 @@ def _compute_waste_grade(savings_amount: float, total_spend: float) -> tuple[str
     return "F", "Critical — severe overspend detected"
 
 
+
 def _generate_service_insight(service_name: str, cost: float, total_spend: float, provider: str) -> dict[str, str]:
     """Generate specific, actionable insight for a service based on provider patterns."""
     pct_of_total = (cost / total_spend * 100) if total_spend > 0 else 0
@@ -4450,6 +4451,7 @@ def _redact_and_build_teaser(raw: dict[str, Any], rows_parsed: int) -> dict[str,
     Shows real insights and value — locks only remediation scripts and resource IDs.
     Philosophy: give enough analysis that prospects see CloudFinOps understands their bill
     better than they do, then convert with "connect your account for continuous monitoring."
+
     """
     total_spend = float(raw.get("total_spend") or 0)
     savings_amount = float(raw.get("savings_amount") or raw.get("existing_credits_and_savings") or 0)
@@ -4460,21 +4462,27 @@ def _redact_and_build_teaser(raw: dict[str, Any], rows_parsed: int) -> dict[str,
     waste_grade, waste_grade_label = _compute_waste_grade(savings_amount, total_spend)
 
     # Savings range: ±20% band around the detected savings figure.
+
+    # If no existing savings detected, estimate conservatively from spend.
+
     if savings_amount > 0:
         savings_min = round(savings_amount * 0.8, 2)
         savings_max = round(savings_amount * 1.2, 2)
     else:
+
+        # Heuristic: 10–20% of spend is typically recoverable.
         savings_min = round(total_spend * 0.10, 2)
         savings_max = round(total_spend * 0.20, 2)
 
-    # Build enriched findings for ALL services — no artificial cap.
-    # We already rate-limit to 5 scans/IP/hour. The report itself is the showcase.
+    # Build top-3 redacted findings from raw_services
     raw_services: list[dict[str, Any]] = raw.get("raw_services") or []
     top_findings: list[dict[str, Any]] = []
-    for svc in raw_services:
+    for svc in raw_services[:3]:
+
         service_name = str(svc.get("service") or svc.get("Service") or "Unknown Service")
         cost = float(svc.get("cost") or svc.get("Cost") or 0)
         category = str(svc.get("category") or "Other")
+
 
         if cost <= 0:
             continue
@@ -4492,9 +4500,11 @@ def _redact_and_build_teaser(raw: dict[str, Any], rows_parsed: int) -> dict[str,
             "risk_level": insight_data["risk_level"],
             "estimated_impact": round(cost * 0.15, 2),
             # Still locked: specific resource IDs and CLI scripts
+
             "how_to_fix": "SIGNUP_REQUIRED",
             "evidence_lines": [],
         })
+
 
     # Cost concentration analysis
     top_3_cost = sum(f["cost"] for f in top_findings[:3])
@@ -4625,6 +4635,7 @@ def _redact_and_build_teaser(raw: dict[str, Any], rows_parsed: int) -> dict[str,
             "potential_saving_pct": 25,
         }
 
+
     return {
         "provider_detected": provider,
         "total_analyzed_spend": total_spend,
@@ -4637,6 +4648,7 @@ def _redact_and_build_teaser(raw: dict[str, Any], rows_parsed: int) -> dict[str,
         "top_findings_teaser": top_findings,
         "remediation_status": "SIGNUP_REQUIRED",
         "rows_parsed": rows_parsed,
+
         "total_services_detected": total_services,
         "services_above_5pct": services_above_5pct,
         "cost_concentration_top3_pct": concentration_pct,
@@ -4663,6 +4675,7 @@ def formatCurrency(amount: float, currency: str) -> str:
     if currency == "GBP":
         return f"£{amount:,.0f}"
     return f"${amount:,.0f}"
+
 
 
 @router.post("/scan/public-upload")
@@ -4767,3 +4780,4 @@ async def public_bill_scan(
         redacted.get("waste_grade"),
     )
     return redacted
+

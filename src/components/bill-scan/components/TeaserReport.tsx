@@ -1,7 +1,9 @@
 "use client";
 
+
 import { TrendingDown, DollarSign, Cloud, BarChart3, Lock, AlertTriangle, Zap, PieChart, ArrowRight, Clock, Target, Flame, ArrowRightLeft } from "lucide-react";
 import type { TeaserReportPayload, FindingTeaser } from "../types";
+
 import { WASTE_GRADE_META } from "../constants";
 
 interface TeaserReportProps {
@@ -16,11 +18,13 @@ const PROVIDER_LABELS: Record<string, string> = {
   generic: "Cloud Provider",
 };
 
+
 const RISK_COLORS: Record<string, { border: string; bg: string; text: string; dot: string }> = {
   high: { border: "border-rose-500/30", bg: "bg-rose-500/5", text: "text-rose-400", dot: "bg-rose-500" },
   medium: { border: "border-amber-500/30", bg: "bg-amber-500/5", text: "text-amber-400", dot: "bg-amber-500" },
   low: { border: "border-emerald-500/30", bg: "bg-emerald-500/5", text: "text-emerald-400", dot: "bg-emerald-500" },
 };
+
 
 function formatCurrency(amount: number, currency: string): string {
   return new Intl.NumberFormat("en-US", {
@@ -30,6 +34,7 @@ function formatCurrency(amount: number, currency: string): string {
     maximumFractionDigits: 0,
   }).format(amount);
 }
+
 
 function FindingCard({ finding, currency, index }: { finding: FindingTeaser; currency: string; index: number }) {
   const risk = RISK_COLORS[finding.risk_level] || RISK_COLORS.medium;
@@ -85,14 +90,17 @@ export function TeaserReport({ data, fileName }: TeaserReportProps) {
 
   return (
     <div id="bill-scan-teaser-report" className="space-y-6">
-      {/* Header */}
+
+      {/* ── Header ── */}
       <div className="flex flex-col items-start gap-1 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-xl font-bold text-white">Bill Analysis Complete</h2>
+          <h2 className="text-xl font-bold text-white">Scan Results</h2>
+
           <p className="text-sm text-slate-400">
             {providerLabel} · {fileName}
           </p>
         </div>
+
         <div className="flex items-center gap-2">
           <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-400">
             {data.rows_parsed.toLocaleString()} rows parsed
@@ -123,16 +131,21 @@ export function TeaserReport({ data, fileName }: TeaserReportProps) {
         <div className="flex flex-col items-center justify-center gap-1 rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-6">
           <TrendingDown className="mb-1 h-5 w-5 text-emerald-500" />
           <span className="text-xs font-medium uppercase tracking-widest text-slate-400">Est. Monthly Savings</span>
+
           <span className="text-2xl font-bold text-emerald-400">
             {formatCurrency(data.estimated_monthly_savings_min, data.currency)}
             {" – "}
             {formatCurrency(data.estimated_monthly_savings_max, data.currency)}
           </span>
           <span className="text-xs text-slate-500">
-            {formatCurrency(annualSavingsMin, data.currency)} – {formatCurrency(annualSavingsMax, data.currency)} / year
+
+            {formatCurrency(annualSavingsMin, data.currency)} –{" "}
+            {formatCurrency(annualSavingsMax, data.currency)} / year
+
           </span>
         </div>
       </div>
+
 
       {/* Urgency banner — "you've already burned $X" */}
       {data.annual_waste_so_far && data.annual_waste_so_far > 0 && (
@@ -228,11 +241,14 @@ export function TeaserReport({ data, fileName }: TeaserReportProps) {
           <div className="mb-4 flex items-center gap-2">
             <PieChart className="h-4 w-4 text-indigo-400" />
             <h3 className="text-sm font-semibold text-white">Spend Distribution</h3>
+
           </div>
           <div className="space-y-3">
             {Object.entries(data.by_category)
               .sort(([, a], [, b]) => b - a)
+
               .slice(0, 8)
+
               .map(([category, amount]) => {
                 const pct = Math.round((amount / data.total_analyzed_spend) * 100);
                 return (
@@ -244,7 +260,9 @@ export function TeaserReport({ data, fileName }: TeaserReportProps) {
                         <span className="text-xs text-slate-500">({pct}%)</span>
                       </span>
                     </div>
-                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+
+                    <div className="h-1 w-full overflow-hidden rounded-full bg-white/10">
+
                       <div
                         className="h-full rounded-full bg-gradient-to-r from-indigo-600 to-indigo-400"
                         style={{ width: `${Math.max(pct, 2)}%` }}
@@ -256,6 +274,7 @@ export function TeaserReport({ data, fileName }: TeaserReportProps) {
           </div>
         </div>
       )}
+
 
       {/* Service-level findings */}
       {data.top_findings_teaser.length > 0 && (
@@ -331,6 +350,7 @@ export function TeaserReport({ data, fileName }: TeaserReportProps) {
           ))}
         </div>
       </div>
+
     </div>
   );
 }
