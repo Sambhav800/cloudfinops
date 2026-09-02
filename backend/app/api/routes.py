@@ -4476,10 +4476,10 @@ def _redact_and_build_teaser(raw: dict[str, Any], rows_parsed: int) -> dict[str,
         savings_min = round(total_spend * 0.10, 2)
         savings_max = round(total_spend * 0.20, 2)
 
-    # Build top-3 redacted findings from raw_services
+    # Show ALL services. Rate-limited to 5 scans/IP/hour; the report is the showcase.
     raw_services: list[dict[str, Any]] = raw.get("raw_services") or []
     top_findings: list[dict[str, Any]] = []
-    for svc in raw_services[:3]:
+    for svc in raw_services:
 
         service_name = str(svc.get("service") or svc.get("Service") or "Unknown Service")
         cost = float(svc.get("cost") or svc.get("Cost") or 0)
