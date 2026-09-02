@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Evidence Card & Safety Clearance — CloudFinOps Demo</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-primary: #0b0f1a;
+      --bg-card: rgba(17, 24, 42, 0.85);
+      --bg-card-hover: rgba(22, 30, 52, 0.95);
+      --bg-glass: rgba(255, 255, 255, 0.04);
+      --bg-glass-hover: rgba(255, 255, 255, 0.07);
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-accent: rgba(99, 102, 241, 0.3);
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent-indigo: #818cf8;
+      --accent-blue: #60a5fa;
+      --accent-emerald: #34d399;
+      --accent-amber: #fbbf24;
+      --accent-red: #f87171;
+      --accent-violet: #a78bfa;
+      --risk-low: #34d399;
+      --risk-low-bg: rgba(52, 211, 153, 0.1);
+      --risk-medium: #fbbf24;
+      --risk-medium-bg: rgba(251, 191, 36, 0.1);
+      --risk-high: #f87171;
+      --risk-high-bg: rgba(248, 113, 113, 0.1);
+      --signal-ok: #34d399;
+      --signal-warn: #fbbf24;
+      --signal-critical: #f87171;
+      --signal-unavailable: #64748b;
+      --pass-color: #34d399;
+      --pass-bg: rgba(52, 211, 153, 0.1);
+      --fail-color: #f87171;
+      --fail-bg: rgba(248, 113, 113, 0.1);
+      --skip-color: #fbbf24;
+      --skip-bg: rgba(251, 191, 36, 0.1);
+      --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.4);
+      --shadow-glow-indigo: 0 0 30px rgba(99, 102, 241, 0.15);
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      padding: 2rem;
+      background-image:
+        radial-gradient(ellipse at 20% 50%, rgba(99, 102, 241, 0.08) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 20%, rgba(96, 165, 250, 0.06) 0%, transparent 50%),
+        radial-gradient(ellipse at 50% 80%, rgba(167, 139, 250, 0.05) 0%, transparent 50%);
+    }
+
+    .demo-header {
+      text-align: center;
+      margin-bottom: 2.5rem;
+    }
+    .demo-header h1 {
+      font-size: 1.75rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, var(--accent-indigo), var(--accent-blue), var(--accent-violet));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 0.5rem;
+      letter-spacing: -0.02em;
+    }
+    .demo-header p {
+      color: var(--text-secondary);
+      font-size: 0.875rem;
+    }
+
+    /* ── Evidence Card Container ── */
+    .evidence-card {
+      max-width: 720px;
+      margin: 0 auto;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: var(--shadow-lg), var(--shadow-glow-indigo);
+      backdrop-filter: blur(20px);
+      animation: cardSlideIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+    @keyframes cardSlideIn {
+      from { opacity: 0; transform: translateY(24px) scale(0.97); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    /* ── Resource Summary Header ── */
+    .resource-header {
+      padding: 1.5rem 1.75rem;
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.12) 0%, rgba(96, 165, 250, 0.08) 100%);
+      border-bottom: 1px solid var(--border-subtle);
+      position: relative;
+      overflow: hidden;
+    }
+    .resource-header::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--accent-indigo), var(--accent-blue), var(--accent-violet));
+    }
+    .resource-meta {
+      display: flex;
+      align-items: center;
+      gap: 0.625rem;
+      margin-bottom: 0.75rem;
+      flex-wrap: wrap;
+    }
+    .provider-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.375rem;
+      padding: 0.25rem 0.625rem;
+      border-radius: 6px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .provider-aws { background: rgba(255, 153, 0, 0.15); color: #ff9900; border: 1px solid rgba(255, 153, 0, 0.25); }
+    .provider-azure { background: rgba(0, 120, 212, 0.15); color: #4db8ff; border: 1px solid rgba(0, 120, 212, 0.25); }
+    .provider-gcp { background: rgba(66, 133, 244, 0.15); color: #79b0ff; border: 1px solid rgba(66, 133, 244, 0.25); }
+    .type-badge {
+      padding: 0.25rem 0.625rem;
+      border-radius: 6px;
+      font-size: 0.7rem;
+      font-weight: 500;
+      background: var(--bg-glass);
+      color: var(--text-secondary);
+      border: 1px solid var(--border-subtle);
+    }
+    .resource-name {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 0.875rem;
+      letter-spacing: -0.01em;
+    }
+    .resource-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 0.75rem;
+    }
+    .stat-item {
+      padding: 0.625rem 0.75rem;
+      background: var(--bg-glass);
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+    }
+    .stat-label {
+      font-size: 0.65rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      margin-bottom: 0.25rem;
+    }
+    .stat-value {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+    .stat-value.action { color: var(--accent-blue); }
+    .stat-value.savings { color: var(--accent-emerald); }
+
+    /* ── Risk Badge ── */
+    .risk-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.375rem;
+      padding: 0.3rem 0.75rem;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .risk-low { background: var(--risk-low-bg); color: var(--risk-low); border: 1px solid rgba(52, 211, 153, 0.25); }
+    .risk-medium { background: var(--risk-medium-bg); color: var(--risk-medium); border: 1px solid rgba(251, 191, 36, 0.25); }
+    .risk-high { background: var(--risk-high-bg); color: var(--risk-high); border: 1px solid rgba(248, 113, 113, 0.25); }
+    .risk-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    .risk-low .risk-dot { background: var(--risk-low); }
+    .risk-medium .risk-dot { background: var(--risk-medium); }
+    .risk-high .risk-dot { background: var(--risk-high); }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(1.4); }
+    }
+
+    /* ── Section Styling ── */
+    .card-section {
+      padding: 1.25rem 1.75rem;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .card-section:last-child { border-bottom: none; }
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-secondary);
+      margin-bottom: 1rem;
+    }
+    .section-icon {
+      width: 18px; height: 18px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.85rem;
+    }
+
+    /* ── Why We Flagged This ── */
+    .why-flagged {
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.08), rgba(96, 165, 250, 0.05));
+      border: 1px solid var(--border-accent);
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+      margin-top: 0.25rem;
+    }
+    .why-flagged p {
+      font-size: 0.875rem;
+      line-height: 1.6;
+      color: var(--text-primary);
+    }
+
+    /* ── Missing Data Warning ── */
+    .missing-data-warning {
+      background: linear-gradient(135deg, rgba(251, 191, 36, 0.08), rgba(251, 191, 36, 0.04));
+      border: 1px solid rgba(251, 191, 36, 0.2);
+      border-radius: 10px;
+      padding: 0.875rem 1.125rem;
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+      margin-top: 0.5rem;
+    }
+    .warning-icon {
+      font-size: 1.1rem;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    .warning-texts .warning-title {
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--accent-amber);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 0.25rem;
+    }
+    .warning-texts .warning-message {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    /* ── Signals Grid ── */
+    .signals-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.625rem;
+    }
+    .signal-tile {
+      padding: 0.875rem;
+      background: var(--bg-glass);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      transition: all 0.2s ease;
+      cursor: default;
+    }
+    .signal-tile:hover {
+      background: var(--bg-glass-hover);
+      transform: translateY(-1px);
+      border-color: rgba(255,255,255,0.1);
+    }
+    .signal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.5rem;
+    }
+    .signal-name {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-secondary);
+    }
+    .signal-status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+    }
+    .signal-status-dot.ok { background: var(--signal-ok); box-shadow: 0 0 6px rgba(52,211,153,0.4); }
+    .signal-status-dot.warn { background: var(--signal-warn); box-shadow: 0 0 6px rgba(251,191,36,0.4); }
+    .signal-status-dot.critical { background: var(--signal-critical); box-shadow: 0 0 6px rgba(248,113,113,0.4); }
+    .signal-status-dot.unavailable { background: var(--signal-unavailable); }
+    .signal-value {
+      font-size: 1.25rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    .signal-value.ok { color: var(--signal-ok); }
+    .signal-value.warn { color: var(--signal-warn); }
+    .signal-value.critical { color: var(--signal-critical); }
+    .signal-value.unavailable { color: var(--signal-unavailable); }
+    .signal-detail {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      margin-top: 0.125rem;
+    }
+
+    /* ── Safety Clearance Checklist ── */
+    .clearance-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .clearance-item {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.75rem 1rem;
+      background: var(--bg-glass);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      transition: all 0.2s ease;
+    }
+    .clearance-item:hover {
+      background: var(--bg-glass-hover);
+      transform: translateX(3px);
+    }
+    .clearance-icon {
+      width: 28px; height: 28px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.85rem;
+      flex-shrink: 0;
+      font-weight: 700;
+    }
+    .clearance-pass .clearance-icon { background: var(--pass-bg); color: var(--pass-color); border: 1px solid rgba(52,211,153,0.2); }
+    .clearance-fail .clearance-icon { background: var(--fail-bg); color: var(--fail-color); border: 1px solid rgba(248,113,113,0.2); }
+    .clearance-skip .clearance-icon { background: var(--skip-bg); color: var(--skip-color); border: 1px solid rgba(251,191,36,0.2); }
+    .clearance-text {
+      flex: 1;
+    }
+    .clearance-name {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 0.125rem;
+    }
+    .clearance-detail {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+    .clearance-badge {
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      flex-shrink: 0;
+    }
+    .clearance-pass .clearance-badge { background: var(--pass-bg); color: var(--pass-color); }
+    .clearance-fail .clearance-badge { background: var(--fail-bg); color: var(--fail-color); }
+    .clearance-skip .clearance-badge { background: var(--skip-bg); color: var(--skip-color); }
+
+    /* ── Footer ── */
+    .card-footer {
+      padding: 1rem 1.75rem;
+      background: rgba(0,0,0,0.15);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .card-footer-text {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+    .card-footer-actions {
+      display: flex;
+      gap: 0.5rem;
+    }
+    .btn {
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: all 0.2s ease;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent-indigo), var(--accent-blue));
+      color: white;
+      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+    }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(99, 102, 241, 0.4); }
+    .btn-ghost {
+      background: var(--bg-glass);
+      color: var(--text-secondary);
+      border: 1px solid var(--border-subtle);
+    }
+    .btn-ghost:hover { background: var(--bg-glass-hover); color: var(--text-primary); }
+
+    /* ── Responsive ── */
+    @media (max-width: 600px) {
+      body { padding: 1rem; }
+      .signals-grid { grid-template-columns: repeat(2, 1fr); }
+      .resource-stats { grid-template-columns: 1fr 1fr; }
+    }
+
+    /* ── Staggered animation ── */
+    .animate-in {
+      opacity: 0;
+      transform: translateY(12px);
+      animation: fadeSlideIn 0.4s ease forwards;
+    }
+    @keyframes fadeSlideIn {
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="demo-header">
+    <h1>☁️ Evidence Card & Safety Clearance Checklist</h1>
+    <p>CloudFinOps — AI-Powered Optimization Recommendation Evidence</p>
+  </div>
+
+  <div class="evidence-card">
+
+    <!-- ── 1. Resource Summary Header ── -->
+    <div class="resource-header">
+      <div class="resource-meta">
+        <span class="provider-badge provider-aws">☁ AWS</span>
+        <span class="type-badge">EC2 Instance</span>
+        <span class="risk-badge risk-low"><span class="risk-dot"></span> Low Risk</span>
+      </div>
+      <div class="resource-name">prod-api-server-west-2a (i-0a1b2c3d4e5f67890)</div>
+      <div class="resource-stats">
+        <div class="stat-item">
+          <div class="stat-label">Monthly Cost</div>
+          <div class="stat-value">$847.20</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-label">Recommended Action</div>
+          <div class="stat-value action">Rightsize ↓</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-label">Est. Monthly Savings</div>
+          <div class="stat-value savings">$312.40 (36.9%)</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-label">Target Type</div>
+          <div class="stat-value">m6i.xlarge → m6i.large</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── 5. Why We Flagged This ── -->
+    <div class="card-section animate-in" style="animation-delay: 0.1s">
+      <div class="section-title">
+        <span class="section-icon">💡</span> Why We Flagged This
+      </div>
+      <div class="why-flagged">
+        <p>Average CPU utilization has been <strong>below 12%</strong> over the past 14 days with peak usage never exceeding 28%. Network throughput is well within the capacity of the recommended smaller instance type. All 5 safety clearance checks passed — this resource is <strong>not in a disaster-recovery pair</strong>, <strong>not part of an auto-scaling group</strong>, and has <strong>no recent state changes</strong>.</p>
+      </div>
+    </div>
+
+    <!-- ── 6. Missing Data Warning ── -->
+    <div class="card-section animate-in" style="animation-delay: 0.15s; padding-top: 0;">
+      <div class="missing-data-warning">
+        <span class="warning-icon">⚠️</span>
+        <div class="warning-texts">
+          <div class="warning-title">Telemetry Completeness Alert</div>
+          <div class="warning-message">Memory (RAM) utilization data is unavailable — CloudWatch does not collect in-guest memory metrics by default. Install the CloudWatch Agent to enable memory monitoring. <strong>Confidence reduced from HIGH to MEDIUM.</strong></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── 2. Corroborating Telemetry Signals ── -->
+    <div class="card-section animate-in" style="animation-delay: 0.2s">
+      <div class="section-title">
+        <span class="section-icon">📊</span> Corroborating Telemetry Signals
+      </div>
+      <div class="signals-grid">
+        <div class="signal-tile">
+          <div class="signal-header">
+            <span class="signal-name">CPU</span>
+            <span class="signal-status-dot ok"></span>
+          </div>
+          <div class="signal-value ok">11.3%</div>
+          <div class="signal-detail">avg over 14d · peak 27.8%</div>
+        </div>
+        <div class="signal-tile">
+          <div class="signal-header">
+            <span class="signal-name">Network</span>
+            <span class="signal-status-dot ok"></span>
+          </div>
+          <div class="signal-value ok">142 Mbps</div>
+          <div class="signal-detail">avg throughput · 23% of cap</div>
+        </div>
+        <div class="signal-tile">
+          <div class="signal-header">
+            <span class="signal-name">Disk I/O</span>
+            <span class="signal-status-dot ok"></span>
+          </div>
+          <div class="signal-value ok">840 IOPS</div>
+          <div class="signal-detail">avg · well below gp3 limit</div>
+        </div>
+        <div class="signal-tile">
+          <div class="signal-header">
+            <span class="signal-name">Memory</span>
+            <span class="signal-status-dot unavailable"></span>
+          </div>
+          <div class="signal-value unavailable">N/A</div>
+          <div class="signal-detail">CW Agent not installed</div>
+        </div>
+        <div class="signal-tile">
+          <div class="signal-header">
+            <span class="signal-name">State</span>
+            <span class="signal-status-dot ok"></span>
+          </div>
+          <div class="signal-value ok">Running</div>
+          <div class="signal-detail">stable for 47 days</div>
+        </div>
+        <div class="signal-tile">
+          <div class="signal-header">
+            <span class="signal-name">Connections</span>
+            <span class="signal-status-dot warn"></span>
+          </div>
+          <div class="signal-value warn">23</div>
+          <div class="signal-detail">active TCP · moderate load</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── 3. Safety Clearance Audit Checklist ── -->
+    <div class="card-section animate-in" style="animation-delay: 0.3s">
+      <div class="section-title">
+        <span class="section-icon">🛡️</span> Safety Clearance Audit Checklist
+      </div>
+      <div class="clearance-list">
+        <div class="clearance-item clearance-pass">
+          <div class="clearance-icon">✓</div>
+          <div class="clearance-text">
+            <div class="clearance-name">Disaster Recovery Tag</div>
+            <div class="clearance-detail">No DR, HA, or failover tags detected on this resource</div>
+          </div>
+          <span class="clearance-badge">Cleared</span>
+        </div>
+        <div class="clearance-item clearance-pass">
+          <div class="clearance-icon">✓</div>
+          <div class="clearance-text">
+            <div class="clearance-name">Auto Scaling Group / Fleet</div>
+            <div class="clearance-detail">Not a member of any ASG, fleet, or managed instance group</div>
+          </div>
+          <span class="clearance-badge">Cleared</span>
+        </div>
+        <div class="clearance-item clearance-pass">
+          <div class="clearance-icon">✓</div>
+          <div class="clearance-text">
+            <div class="clearance-name">Blue-Green / Canary Deployment</div>
+            <div class="clearance-detail">No blue-green, canary, or shadow deployment patterns detected</div>
+          </div>
+          <span class="clearance-badge">Cleared</span>
+        </div>
+        <div class="clearance-item clearance-pass">
+          <div class="clearance-icon">✓</div>
+          <div class="clearance-text">
+            <div class="clearance-name">Recent State Change</div>
+            <div class="clearance-detail">Last state change was 47 days ago — well beyond 14-day threshold</div>
+          </div>
+          <span class="clearance-badge">Cleared</span>
+        </div>
+        <div class="clearance-item clearance-pass">
+          <div class="clearance-icon">✓</div>
+          <div class="clearance-text">
+            <div class="clearance-name">Backup / Replication Source</div>
+            <div class="clearance-detail">No backup-source or replication-role tags found</div>
+          </div>
+          <span class="clearance-badge">Cleared</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Footer ── -->
+    <div class="card-footer">
+      <span class="card-footer-text">Evidence generated 2026-09-02 · 14-day observation window · CloudFinOps v3.2</span>
+      <div class="card-footer-actions">
+        <button class="btn btn-ghost">Dismiss</button>
+        <button class="btn btn-primary">Apply Recommendation</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Second card example: High Risk / Azure / Vetoed ── -->
+  <div style="height: 2.5rem"></div>
+
+  <div class="evidence-card" style="animation-delay: 0.3s;">
+
+    <div class="resource-header">
+      <div class="resource-meta">
+        <span class="provider-badge provider-azure">◆ Azure</span>
+        <span class="type-badge">Virtual Machine</span>
+        <span class="risk-badge risk-high"><span class="risk-dot"></span> High Risk</span>
+      </div>
+      <div class="resource-name">payments-db-primary-eastus (vm-9f8e7d6c5b4a)</div>
+      <div class="resource-stats">
+        <div class="stat-item">
+          <div class="stat-label">Monthly Cost</div>
+          <div class="stat-value">$2,134.60</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-label">Recommended Action</div>
+          <div class="stat-value action">Terminate ⏻</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-label">Est. Monthly Savings</div>
+          <div class="stat-value savings">$2,134.60 (100%)</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-label">Last Active</div>
+          <div class="stat-value">3 days ago</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card-section animate-in" style="animation-delay: 0.35s">
+      <div class="section-title">
+        <span class="section-icon">💡</span> Why We Flagged This
+      </div>
+      <div class="why-flagged">
+        <p>This VM was <strong>stopped 3 days ago</strong> and is still incurring charges for its attached Premium SSD disks and reserved IP. CPU was at <strong>0%</strong> for 72 hours before shutdown. However, <strong>2 safety veto checks failed</strong> — this resource is tagged as a <strong>DR failover replica</strong> and serves as a <strong>backup replication source</strong>. Manual review is strongly recommended before taking action.</p>
+      </div>
+    </div>
+
+    <div class="card-section animate-in" style="animation-delay: 0.4s">
+      <div class="section-title">
+        <span class="section-icon">📊</span> Corroborating Telemetry Signals
+      </div>
+      <div class="signals-grid">
+        <div class="signal-tile">
+          <div class="signal-header">
+            <span class="signal-name">CPU</span>
+            <span class="signal-status-dot critical"></span>
+          </div>
+          <div class="signal-value critical">0%</div>
+          <div class="signal-detail">stopped · no activity 72h</div>
+        </div>
+        <div class="signal-tile">
+          <div class="signal-header">
+            <span class="signal-name">Network</span>
+            <span class="signal-status-dot critical"></span>
+          </div>
+          <div class="signal-value critical">0 Mbps</div>
+          <div class="signal-detail">no traffic since stop</div>
+        </div>
+        <div class="signal-tile">
+          <div class="signal-header">
+            <span class="signal-name">Disk I/O</span>
+            <span class="signal-status-dot critical"></span>
+          </div>
+          <div class="signal-value critical">0 IOPS</div>
+          <div class="signal-detail">Premium SSD still attached</div>
+        </div>
+        <div class="signal-tile">
+          <div class="signal-header">
+            <span class="signal-name">Memory</span>
+            <span class="signal-status-dot critical"></span>
+          </div>
+          <div class="signal-value critical">0%</div>
+          <div class="signal-detail">deallocated</div>
+        </div>
+        <div class="signal-tile">
+          <div class="signal-header">
+            <span class="signal-name">State</span>
+            <span class="signal-status-dot critical"></span>
+          </div>
+          <div class="signal-value critical">Stopped</div>
+          <div class="signal-detail">deallocated 3 days ago</div>
+        </div>
+        <div class="signal-tile">
+          <div class="signal-header">
+            <span class="signal-name">Connections</span>
+            <span class="signal-status-dot critical"></span>
+          </div>
+          <div class="signal-value critical">0</div>
+          <div class="signal-detail">no active connections</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card-section animate-in" style="animation-delay: 0.5s">
+      <div class="section-title">
+        <span class="section-icon">🛡️</span> Safety Clearance Audit Checklist
+      </div>
+      <div class="clearance-list">
+        <div class="clearance-item clearance-fail">
+          <div class="clearance-icon">✕</div>
+          <div class="clearance-text">
+            <div class="clearance-name">Disaster Recovery Tag</div>
+            <div class="clearance-detail">Tagged: dr:failover-replica=true — this is a DR standby node</div>
+          </div>
+          <span class="clearance-badge">Vetoed</span>
+        </div>
+        <div class="clearance-item clearance-pass">
+          <div class="clearance-icon">✓</div>
+          <div class="clearance-text">
+            <div class="clearance-name">Auto Scaling Group / Fleet</div>
+            <div class="clearance-detail">Not a member of any VMSS or availability set</div>
+          </div>
+          <span class="clearance-badge">Cleared</span>
+        </div>
+        <div class="clearance-item clearance-pass">
+          <div class="clearance-icon">✓</div>
+          <div class="clearance-text">
+            <div class="clearance-name">Blue-Green / Canary Deployment</div>
+            <div class="clearance-detail">No deployment slot or traffic-splitting config detected</div>
+          </div>
+          <span class="clearance-badge">Cleared</span>
+        </div>
+        <div class="clearance-item clearance-skip">
+          <div class="clearance-icon">!</div>
+          <div class="clearance-text">
+            <div class="clearance-name">Recent State Change</div>
+            <div class="clearance-detail">Stopped 3 days ago — within 14-day observation window</div>
+          </div>
+          <span class="clearance-badge">Warning</span>
+        </div>
+        <div class="clearance-item clearance-fail">
+          <div class="clearance-icon">✕</div>
+          <div class="clearance-text">
+            <div class="clearance-name">Backup / Replication Source</div>
+            <div class="clearance-detail">Tagged: backup-role=replication-source — serves as a replication primary</div>
+          </div>
+          <span class="clearance-badge">Vetoed</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card-footer">
+      <span class="card-footer-text">Evidence generated 2026-09-02 · 14-day observation window · CloudFinOps v3.2</span>
+      <div class="card-footer-actions">
+        <button class="btn btn-ghost">Dismiss</button>
+        <button class="btn btn-primary" style="opacity:0.5; cursor: not-allowed;" disabled>Blocked by Safety Veto</button>
+      </div>
+    </div>
+
+  </div>
+
+</body>
+</html>

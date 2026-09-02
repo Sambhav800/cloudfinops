@@ -907,6 +907,31 @@ async def get_recommendation_evidence(
         raise HTTPException(status_code=500, detail="Failed to load recommendation evidence")
 
 
+@recommendations_router.get("/{recommendation_id}/evidence-card")
+async def get_recommendation_evidence_card(
+    recommendation_id: RecommendationIdPath,
+    user: ClerkUser = Depends(get_current_user),
+    db: MongoDBClient = Depends(get_db_client),
+) -> dict[str, Any]:
+    """Get the Evidence Card and Safety Clearance Checklist for a recommendation."""
+    try:
+        recommendation = await _load_owned_recommendation(
+            db=db,
+            user_id=user.id,
+            recommendation_id=recommendation_id,
+        )
+
+        from ..optimization.evidence_card_formatter import build_evidence_card
+
+        card = build_evidence_card(recommendation)
+        return card.to_dict()
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.error("get_recommendation_evidence_card failed: %s", error)
+        raise HTTPException(status_code=500, detail="Failed to generate recommendation evidence card")
+
+
 @recommendations_router.get("/{recommendation_id}/verification", response_model=RecommendationSavingsVerificationResponse)
 async def get_recommendation_verification(
     recommendation_id: RecommendationIdPath,
