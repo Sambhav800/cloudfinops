@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
 import logging
+import re
+import uuid
 from typing import Any, Literal, Optional
 
 import httpx
@@ -351,10 +353,30 @@ async def _validate_manual_integration_payload(
             role_arn = _normalize_optional_string(payload.role_arn)
             if not role_arn:
                 raise HTTPException(status_code=400, detail="Role ARN is required")
+            if not re.match(r"^arn:aws:iam::\d{12}:role/.+$", role_arn):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid Role ARN format. Expected: arn:aws:iam::<account-id>:role/<role-name>",
+                )
+            external_id = _normalize_optional_string(payload.external_id) or str(uuid.uuid4())
+
+            try:
+                import boto3
+                sts = boto3.client("sts")
+                assume_kwargs: dict[str, Any] = {
+                    "RoleArn": role_arn,
+                    "RoleSessionName": "CloudFinOps-Validation",
+                    "DurationSeconds": 900,
+                    "ExternalId": external_id,
+                }
+                await asyncio.to_thread(lambda: sts.assume_role(**assume_kwargs))
+            except Exception as error:
+                _raise_manual_validation_error("aws", error)
+
             return {
                 "auth_type": "role",
                 "role_arn": role_arn,
-                "external_id": _normalize_optional_string(payload.external_id),
+                "external_id": external_id,
             }
 
         access_key_id = _normalize_optional_string(payload.access_key_id)
@@ -473,9 +495,7 @@ async def create_manual_integration(
     if provider == "aws":
         if validated_payload.get("auth_type") == "role":
             record["encrypted_role_arn"] = _encrypt_field(str(validated_payload["role_arn"]))
-            external_id = validated_payload.get("external_id")
-            if external_id:
-                record["encrypted_external_id"] = _encrypt_field(str(external_id))
+            record["encrypted_external_id"] = _encrypt_field(str(validated_payload["external_id"]))
         else:
             record["encrypted_access_key_id"] = _encrypt_field(str(validated_payload["access_key_id"]))
             record["encrypted_secret_access_key"] = _encrypt_field(str(validated_payload["secret_access_key"]))

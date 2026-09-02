@@ -15,9 +15,8 @@ type RouteContext = {
 export async function GET(request: NextRequest, context: RouteContext) {
     try {
         const authContext = await getBackendAuthContext();
-        const fallbackUserId = request.nextUrl.searchParams.get("userId");
 
-        if (!authContext && !fallbackUserId) {
+        if (!authContext?.userId) {
             return NextResponse.json({ detail: "Unauthorized" }, { status: 401 });
         }
 
@@ -29,8 +28,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
                 method: "GET",
                 cache: "no-store",
             },
-            authContext ?? { userId: null, token: null },
-            fallbackUserId,
+            authContext,
         );
 
         const data = await response.json().catch(() => ({}));

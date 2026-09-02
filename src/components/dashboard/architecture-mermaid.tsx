@@ -189,7 +189,8 @@ export function ArchitectureMermaid({
 
             mermaid.initialize({
                 startOnLoad: false,
-                securityLevel: 'loose',
+                securityLevel: 'strict',
+                htmlLabels: false,
                 theme: 'base',
                 themeVariables: {
                     background: 'transparent',
@@ -216,9 +217,6 @@ export function ArchitectureMermaid({
 
                 if (isMounted && containerRef.current) {
                     const styledSvg = injectSvgStyles(svg, palette, lineColor);
-                    // Mermaid output is safe — source code is server-generated from
-                    // our sanitizer (no user input). DOMPurify strips foreignObject
-                    // elements that mermaid uses for text labels, causing blank boxes.
                     containerRef.current.innerHTML = styledSvg;
                     setRendering(false);
                 }

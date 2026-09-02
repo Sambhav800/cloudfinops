@@ -4352,10 +4352,7 @@ def _check_rate_limit(ip: str) -> bool:
 
 
 def _resolve_client_ip(request: Request) -> str:
-    """Extract real client IP, honouring X-Forwarded-For from the Next.js proxy."""
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """Extract client IP from the ASGI connection (not spoofable headers)."""
     if request.client:
         return request.client.host
     return "unknown"

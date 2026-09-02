@@ -427,12 +427,22 @@ def _pdf_line_items_from_metadata(source_metadata: dict[str, Any]) -> list[dict[
     return line_items
 
 
+MAX_BILL_FILE_BYTES = 20 * 1024 * 1024  # 20 MB uncompressed cap
+MAX_BILL_ROWS = 500_000
+
+
 def _read_dataframe(content: bytes, filename: str) -> tuple[pd.DataFrame, dict[str, Any]]:
+    if len(content) > MAX_BILL_FILE_BYTES:
+        raise ValueError(
+            f"File too large ({len(content) / (1024 * 1024):.0f} MB). "
+            f"Maximum supported size is {MAX_BILL_FILE_BYTES // (1024 * 1024)} MB."
+        )
+
     extension = os.path.splitext(filename)[1].lower()
     if extension == ".csv":
         for encoding in ("utf-8", "utf-8-sig", "latin1"):
             try:
-                df = pd.read_csv(io.BytesIO(content), encoding=encoding)
+                df = pd.read_csv(io.BytesIO(content), encoding=encoding, nrows=MAX_BILL_ROWS)
                 currency = _detect_currency_from_dataframe(df)
                 return df, {
                     "source_format": "csv",
@@ -445,7 +455,7 @@ def _read_dataframe(content: bytes, filename: str) -> tuple[pd.DataFrame, dict[s
 
     if extension in (".xlsx", ".xls"):
         parser_name = "pandas_excel_xlsx" if extension == ".xlsx" else "pandas_excel_xls"
-        df = pd.read_excel(io.BytesIO(content))
+        df = pd.read_excel(io.BytesIO(content), nrows=MAX_BILL_ROWS)
         currency = _detect_currency_from_dataframe(df)
         return df, {
             "source_format": extension.lstrip("."),
