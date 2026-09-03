@@ -29,6 +29,7 @@ from ..core.savings_verification import (
     verify_recommendation_savings,
 )
 from ..db import MongoDBClient, get_db_client
+from ..optimization.evidence_card_schemas import EvidenceCardData
 from ..security import decrypt_integration_credentials
 from ..workers.recommendation_ai_worker import drain_user_recommendation_ai_enrichment
 
@@ -907,12 +908,12 @@ async def get_recommendation_evidence(
         raise HTTPException(status_code=500, detail="Failed to load recommendation evidence")
 
 
-@recommendations_router.get("/{recommendation_id}/evidence-card")
+@recommendations_router.get("/{recommendation_id}/evidence-card", response_model=EvidenceCardData)
 async def get_recommendation_evidence_card(
     recommendation_id: RecommendationIdPath,
     user: ClerkUser = Depends(get_current_user),
     db: MongoDBClient = Depends(get_db_client),
-) -> dict[str, Any]:
+) -> EvidenceCardData:
     """Get the Evidence Card and Safety Clearance Checklist for a recommendation."""
     try:
         recommendation = await _load_owned_recommendation(
@@ -923,8 +924,7 @@ async def get_recommendation_evidence_card(
 
         from ..optimization.evidence_card_formatter import build_evidence_card
 
-        card = build_evidence_card(recommendation)
-        return card.to_dict()
+        return build_evidence_card(recommendation)
     except HTTPException:
         raise
     except Exception as error:

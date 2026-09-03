@@ -165,7 +165,7 @@ class TestEvidenceCardFormatter(unittest.TestCase):
         self.assertEqual(backup_item.status, VetoCheckStatus.VETOED)
         self.assertEqual(card.risk_level, RiskLevel.HIGH)
 
-    def test_to_dict_serialization(self):
+    def test_model_dump_serialization(self):
         rec_dict = {
             "id": "rec_dict_test_1234567890123",
             "resource_name": "simple-instance",
@@ -175,7 +175,7 @@ class TestEvidenceCardFormatter(unittest.TestCase):
         }
 
         card = build_evidence_card(rec_dict)
-        serialized = card.to_dict()
+        serialized = card.model_dump()
 
         self.assertEqual(serialized["recommendation_id"], "rec_dict_test_1234567890123")
         self.assertEqual(serialized["resource_summary"]["provider"], "gcp")
