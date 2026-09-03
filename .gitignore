@@ -100,6 +100,10 @@ trigger_scan.py
 .claude/
 outputs/
 graphify-out/
+*.rvf.lock
+ruvector.db
+backend/ruvector.db
+backend/app/adk/.adk/
 
 # GitHub Actions GCP auth credentials
 gha-creds-*.json

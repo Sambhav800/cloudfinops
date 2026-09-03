@@ -6,6 +6,8 @@ Classifies workloads, detects ghosts, recommends MIG partitioning, and finds arb
 
 from google.adk import Agent
 
+from ...config import DEFAULT_GEMINI_FLASH_MODEL, GEMINI_AGENT_MODEL
+from ...core.gemini_models import is_gemini_auto_model
 from ..tools.gpu_tools import (
     gpu_scan_resources,
     gpu_classify_workload,
@@ -16,9 +18,11 @@ from ..tools.gpu_tools import (
 from ..tools.memory_tools import recall_learned_patterns, save_learned_pattern
 from ..tools.safety_tools import save_finding_to_state
 
+_ADK_MODEL = DEFAULT_GEMINI_FLASH_MODEL if is_gemini_auto_model(GEMINI_AGENT_MODEL) else GEMINI_AGENT_MODEL
+
 gpu_intelligence_agent = Agent(
     name="GPU_Intelligence_Agent",
-    model="gemini-3.5-flash",
+    model=_ADK_MODEL,
     instruction="""You are the GPU Intelligence Agent for CloudFinOps — an expert in NVIDIA GPU architectures, \
 cloud GPU pricing across AWS/Azure/GCP, and workload optimization.
 

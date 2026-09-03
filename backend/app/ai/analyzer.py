@@ -27,6 +27,7 @@ except Exception:
     genai_types = None
 
 from ..config import GEMINI_API_KEY, GEMINI_VERIFY_MODEL
+from ..core.gemini_models import resolve_gemini_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -48,17 +49,19 @@ class _GenAIResponseAdapter:
 class _AsyncGeminiModel:
     """Compat layer that mimics `generate_content_async` from deprecated SDK."""
 
-    def __init__(self, client: Any, model_name: str):
+    def __init__(self, client: Any, model_name: str, api_key: str | None):
         self._client = client
         self._model_name = model_name
+        self._api_key = api_key
 
     async def generate_content_async(
         self,
         prompt: str,
         generation_config: Optional[Any] = None,
     ) -> _GenAIResponseAdapter:
+        model_name = await resolve_gemini_model_name(self._model_name, api_key=self._api_key)
         response = await self._client.aio.models.generate_content(
-            model=self._model_name,
+            model=model_name,
             contents=prompt,
             config=generation_config,
         )
@@ -71,7 +74,7 @@ class _AsyncGeminiModel:
             finish_reason = None
             if candidates:
                 finish_reason = getattr(candidates[0], 'finish_reason', None)
-            logger.warning(f"⚠️ Gemini response is EMPTY. block_reason={block_reason}, finish_reason={finish_reason}, model={self._model_name}")
+            logger.warning(f"⚠️ Gemini response is EMPTY. block_reason={block_reason}, finish_reason={finish_reason}, model={model_name}")
         return resp
 
 
@@ -99,7 +102,7 @@ class AIAnalyzer:
             self.model = None
         else:
             self.client = genai_client.Client(api_key=GEMINI_API_KEY)
-            self.model = _AsyncGeminiModel(self.client, GEMINI_MODEL)
+            self.model = _AsyncGeminiModel(self.client, GEMINI_MODEL, GEMINI_API_KEY)
             logger.info(f"🤖 AIAnalyzer initialized with model: {GEMINI_MODEL} (SDK: google-genai)")
 
     def _build_generation_config(

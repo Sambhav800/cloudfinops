@@ -1,0 +1,129 @@
+\documentclass[a4paper,10pt]{article}
+
+\usepackage[top=0.6in, bottom=0.6in, left=0.7in, right=0.7in]{geometry}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{fontawesome5}
+
+\definecolor{heading}{HTML}{1a1a1a}
+\definecolor{accent}{HTML}{2563eb}
+\definecolor{subtext}{HTML}{4b5563}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=accent,
+    urlcolor=accent
+}
+
+\pagestyle{empty}
+
+\titleformat{\section}{\large\bfseries\color{heading}}{}{0em}{}[\titlerule]
+\titlespacing*{\section}{0pt}{10pt}{6pt}
+
+\setlist[itemize]{nosep, leftmargin=14pt, label=\textbullet}
+
+\begin{document}
+
+% Header
+\begin{center}
+    {\LARGE\bfseries Sambhav Pal} \\[4pt]
+    {\color{subtext} Cloud \& DevOps Engineer | Azure Certified (AZ-104)} \\[6pt]
+    \faPhone\ +91-7986820116 \quad
+    \faEnvelope\ sambhavpal5@gmail.com \quad
+    \faLinkedin\ \href{https://linkedin.com/in/sambhavpal}{LinkedIn} \quad
+    \faGithub\ \href{https://github.com/sambhavpal}{GitHub}
+\end{center}
+
+% Professional Summary
+\section{Professional Summary}
+Cloud \& DevOps Engineer with hands-on experience managing production infrastructure on GCP, Azure, and AWS. Currently running multi-environment cloud deployments (dev/staging/production) for an AI-powered SaaS platform. Skilled in infrastructure as code, CI/CD pipeline design, container orchestration, monitoring, and secure cloud architecture. Azure Administrator certified (AZ-104).
+
+% Technical Skills
+\section{Technical Skills}
+\begin{tabular}{@{}l l@{}}
+\textbf{Cloud Platforms} & GCP (Cloud Run, IAM, VPC, Cloud Build), Azure (AKS, ACR, VNets, Monitor), AWS (EC2, S3, IAM) \\
+\textbf{Infrastructure as Code} & Terraform, ARM Templates, CloudFormation, Docker Compose \\
+\textbf{Containers \& Orchestration} & Docker, Kubernetes (AKS), container security, multi-stage builds \\
+\textbf{CI/CD} & GitHub Actions, Cloud Build, Azure DevOps, GitLab CI \\
+\textbf{Monitoring \& Observability} & Prometheus, Grafana, CloudWatch, Azure Monitor, Application Insights \\
+\textbf{Security} & IAM policies, secrets management, network isolation, SSL/TLS, firewall rules \\
+\textbf{Databases} & MongoDB, PostgreSQL, Redis \\
+\textbf{Languages} & Python, Bash, JavaScript, Java (Spring Boot), SQL \\
+\textbf{OS \& Networking} & Linux (Ubuntu/Debian), DNS, reverse proxies (Nginx), VPNs, VPC peering \\
+\end{tabular}
+
+% Work Experience
+\section{Work Experience}
+
+\textbf{Cloud \& DevOps Engineer / Co-Founder} \hfill Nov 2025 -- Present \\
+\textit{CloudFinOps Solutions Pvt. Ltd.} \\[2pt]
+Building and maintaining all infrastructure for a production AI-powered SaaS platform deployed across GCP and Netlify, serving enterprise clients.
+\begin{itemize}
+    \item Designed and manage multi-environment infrastructure: development, staging, and production on GCP Cloud Run with Docker containerization
+    \item Built complete CI/CD pipelines using GitHub Actions and GCP Cloud Build — automated testing, building, and deployment on every push
+    \item Manage MongoDB Atlas clusters with automated backups, connection pooling, and user-scoped data isolation
+    \item Configured CDN caching, SSL certificates, custom domains, and DNS routing across Netlify and GCP
+    \item Implemented secrets management (environment-level encryption keys, API keys, JWT secrets) with proper rotation policies
+    \item Set up monitoring and alerting: uptime checks, error rate tracking, resource utilization dashboards
+    \item Manage IAM policies with least-privilege access across GCP services (Cloud Run, Storage, Secret Manager)
+    \item Designed network architecture: VPC configuration, firewall rules, and secure service-to-service communication
+    \item Handle database migrations, data backup strategies, and disaster recovery planning
+    \item Reduced infrastructure costs by 40\% through right-sizing containers, optimizing cold starts, and implementing auto-scaling policies
+\end{itemize}
+
+\vspace{6pt}
+\textbf{AI/ML Infrastructure Intern} \hfill Jun 2025 -- Aug 2025 \\
+\textit{Multi TV Tech Solution Pvt. Ltd.} \\[2pt]
+\begin{itemize}
+    \item Deployed AI/ML models on cloud infrastructure for sports video analysis (event detection at scale)
+    \item Managed large-scale video data processing pipelines on cloud compute instances
+    \item Implemented MLOps workflows: model versioning, automated retraining triggers, CI/CD for model deployment
+    \item Configured cloud storage and compute resources for GPU-accelerated training workloads
+\end{itemize}
+
+% Projects
+\section{Key Projects}
+
+\textbf{Cloud-Native Microservices Platform on AKS} \hfill Dec 2024 -- May 2025 \\
+\begin{itemize}
+    \item Architected and deployed 6 containerized microservices on Azure Kubernetes Service (AKS)
+    \item Provisioned entire infrastructure using Terraform — VNets, AKS cluster, ACR, load balancers
+    \item Implemented CI/CD via GitHub Actions: build, test, push to ACR, deploy to AKS on every merge
+    \item Configured API Gateway for traffic routing, rate limiting, and service discovery
+    \item Set up centralized monitoring stack: Prometheus for metrics, Grafana for dashboards, alerting on SLA breaches
+    \item Achieved 100\% uptime during 48-hour load test simulating production traffic
+\end{itemize}
+
+\vspace{6pt}
+\textbf{Secure AI Environment Design} \hfill 2025 \\
+\begin{itemize}
+    \item Designed architecture for enterprise AI tool access: API gateway with authentication, usage policies, and audit logging
+    \item Implemented access controls to prevent data leakage — input/output filtering, DLP rules, user-level permissions
+    \item Configured network-level isolation so AI API calls route through controlled egress points
+\end{itemize}
+
+% Certifications
+\section{Certifications}
+\begin{itemize}
+    \item \textbf{Microsoft Certified Azure Administrator Associate (AZ-104)} — production cloud administration, IAM, networking, monitoring
+    \item \textbf{Microsoft Certified Azure Fundamentals (AZ-900)} — cloud architecture and services
+\end{itemize}
+
+% Education
+\section{Education}
+\textbf{B.Tech in Computer Science and Engineering} \hfill 2022 -- 2026 \\
+Dr. B.R. Ambedkar National Institute of Technology, Jalandhar \\[2pt]
+{\small JEE Mains 2022: 99.2 percentile (AIR 7123) among 1.2 million candidates}
+
+% Additional
+\section{Additional}
+\begin{itemize}
+    \item Microsoft Cloud Skills Challenge — Top 8\% globally in Azure competition (2024)
+    \item Conducted hands-on DevOps workshop (GitHub Actions, CI/CD) for 80+ engineering participants
+    \item Company: CloudFinOps Solutions Pvt. Ltd. (Incorporated, UDYAM Registered MSME)
+    \item Incubated at TBI NIT Jalandhar with access to government funding schemes
+\end{itemize}
+
+\end{document}

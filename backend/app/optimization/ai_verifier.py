@@ -17,6 +17,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from ..config import GEMINI_VERIFY_MODEL
+from ..core.gemini_models import resolve_gemini_model_name
 from .evidence_collector import EvidenceBundle
 from .severity import ResourceClassification, ResourceVerdict
 
@@ -49,9 +51,9 @@ class AIVerifier:
     produced a confidence between 0.50 and 0.75.
     """
 
-    def __init__(self, gemini_client: Any = None, model: str = "gemini-2.0-flash"):
+    def __init__(self, gemini_client: Any = None, model: Optional[str] = None):
         self.client = gemini_client
-        self.model = model
+        self.model = model or GEMINI_VERIFY_MODEL
 
     def filter_for_review(
         self, verdicts: List[ResourceVerdict]
@@ -200,7 +202,8 @@ ADJUSTMENT: <float between -0.15 and +0.15, 0.0 if confirm>
 
         if isinstance(self.client, str):
             # Client is an API key
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
+            model_name = await resolve_gemini_model_name(self.model, api_key=self.client)
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     url,

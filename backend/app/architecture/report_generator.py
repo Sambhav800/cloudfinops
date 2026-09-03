@@ -12,12 +12,13 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from ..config import GEMINI_API_KEY
+from ..config import GEMINI_API_KEY, GEMINI_PROPOSE_MODEL
+from ..core.gemini_models import resolve_gemini_model_name
 
 logger = logging.getLogger(__name__)
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
-REPORT_MODEL = "gemini-2.5-flash"
+REPORT_MODEL = GEMINI_PROPOSE_MODEL
 
 
 async def generate_architecture_report(
@@ -127,7 +128,8 @@ FORMATTING RULES:
 """
 
     try:
-        url = f"{GEMINI_API_BASE}/models/{REPORT_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        model_name = await resolve_gemini_model_name(REPORT_MODEL, api_key=GEMINI_API_KEY)
+        url = f"{GEMINI_API_BASE}/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {

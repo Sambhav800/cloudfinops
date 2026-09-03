@@ -50,16 +50,18 @@ const nextConfig: NextConfig = {
     ];
   },
   async rewrites() {
-    return [
-      {
-        source: '/api/:path*',
-        destination: process.env.NEXT_PUBLIC_BACKEND_URL ? `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/:path*` : 'http://127.0.0.1:8000/api/:path*',
-      },
-      {
-        source: '/ws/:path*',
-        destination: process.env.NEXT_PUBLIC_BACKEND_URL ? `${process.env.NEXT_PUBLIC_BACKEND_URL}/ws/:path*` : 'http://127.0.0.1:8000/ws/:path*',
-      },
-    ];
+    return {
+      fallback: [
+        {
+          source: '/api/:path*',
+          destination: process.env.NEXT_PUBLIC_BACKEND_URL ? `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/:path*` : 'http://127.0.0.1:8000/api/:path*',
+        },
+        {
+          source: '/ws/:path*',
+          destination: process.env.NEXT_PUBLIC_BACKEND_URL ? `${process.env.NEXT_PUBLIC_BACKEND_URL}/ws/:path*` : 'http://127.0.0.1:8000/ws/:path*',
+        },
+      ],
+    };
   },
 };
 

@@ -6,7 +6,11 @@ from google.adk import Agent
 from google.adk.agents import LoopAgent
 from google.adk.agents.callback_context import CallbackContext
 
+from ...config import DEFAULT_GEMINI_FLASH_MODEL, GEMINI_AGENT_MODEL
+from ...core.gemini_models import is_gemini_auto_model
 from ..tools.safety_tools import exit_loop
+
+_ADK_MODEL = DEFAULT_GEMINI_FLASH_MODEL if is_gemini_auto_model(GEMINI_AGENT_MODEL) else GEMINI_AGENT_MODEL
 
 
 def _init_safety_state(callback_context: CallbackContext):
@@ -16,7 +20,7 @@ def _init_safety_state(callback_context: CallbackContext):
 
 remediation_agent = Agent(
     name="Remediation_Agent",
-    model="gemini-3.5-flash",
+    model=_ADK_MODEL,
     include_contents="none",
     instruction="""You are the Remediation Agent. You generate safe, executable CLI scripts to fix cloud waste.
 
@@ -57,7 +61,7 @@ If safety_feedback says a resource is production-tagged, EXCLUDE it from the pla
 
 safety_critic = Agent(
     name="Safety_Critic",
-    model="gemini-3.5-flash",
+    model=_ADK_MODEL,
     include_contents="none",
     instruction="""You are the Safety Critic for CloudFinOps. Your ONLY job is to validate remediation scripts before they reach the user.
 

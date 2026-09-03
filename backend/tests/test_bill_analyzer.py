@@ -13,11 +13,12 @@ from app.config import DEFAULT_GEMINI_FAST_MODEL, DEFAULT_GEMINI_FLASH_MODEL
 
 
 def test_gemini_defaults_use_current_flash_model_ids():
-    assert DEFAULT_GEMINI_FLASH_MODEL == "gemini-3-flash-preview"
-    assert DEFAULT_GEMINI_FAST_MODEL == "gemini-3-flash-preview"
+    assert DEFAULT_GEMINI_FLASH_MODEL == "gemini-3.7-flash"
+    assert DEFAULT_GEMINI_FAST_MODEL == "gemini-3.7-flash"
     deprecated_candidates = {
         "gemini-" + "3.1-flash-lite-preview",
         "gemini-3-" + "flash-lite-preview",
+        "gemini-3-flash-preview",
     }
     assert deprecated_candidates.isdisjoint(_AI_MODEL_CANDIDATES)
 

@@ -26,6 +26,11 @@ from ..security import decrypt_integration_credentials
 from ..scanners import AWSScanner
 from .websocket import send_scan_progress, send_scan_complete, get_scan_progress
 from ..ai.analyzer import AIAnalyzer
+from ..ai.fix_generator import (
+    UNSUPPORTED_FIX_TEMPLATE_MESSAGE,
+    UnsupportedFixTemplateError,
+    get_fix_generator,
+)
 from ..core.cache import cache_response
 from ..core.audit import log_audit_event
 from ..core.finance import aggregate_daily_spend_rows, redact_integration_settings_for_audit
@@ -1615,6 +1620,7 @@ def _build_scan_recommendation_notification(
         "recommendation": recommendation_text,
         "action": normalized_action_type,
         "metadata": {
+            "recommendation_id": recommendation.get("recommendation_id"),
             "resource_name": resource_name,
             "estimated_savings": potential_savings,
             "potential_savings": potential_savings,
@@ -1624,8 +1630,77 @@ def _build_scan_recommendation_notification(
             "resource_type": resource_type,
             "ai_reasoning": ai_reasoning,
             "action_type": normalized_action_type,
+            "savings_estimate_status": recommendation.get("savings_estimate_status", "withheld_unassessed"),
         },
     }
+
+
+def _build_optimization_compatibility_stats(opt_result: dict[str, Any]) -> dict[str, Any]:
+    """Project canonical ledger records into legacy scan consumers without recalculating money."""
+    raw_records = opt_result.get("recommendation_records")
+    records = [record for record in raw_records if isinstance(record, dict)] if isinstance(raw_records, list) else []
+    recommendations: list[dict[str, Any]] = []
+    waste_by_type: dict[str, float] = {}
+
+    category_by_type = {
+        "critical_waste": "Critical Waste",
+        "confirmed_waste": "Zombie Resources",
+        "likely_waste": "Idle Resources",
+        "possible_waste": "Review Required",
+        "oversized": "Rightsizing Candidates",
+    }
+    for record in records:
+        if str(record.get("quality_status") or "") == "insufficient_evidence":
+            continue
+        claimable_savings = _coerce_scan_recommendation_savings(record.get("claimable_monthly_savings"))
+        recommendation_type = str(record.get("recommendation_type") or "")
+        category = category_by_type.get(recommendation_type, "Other Opportunities")
+        if claimable_savings > 0:
+            waste_by_type[category] = waste_by_type.get(category, 0.0) + claimable_savings
+        recommendations.append({
+            "recommendation_id": str(record.get("id") or ""),
+            "resource_name": str(record.get("resource_name") or record.get("resource_id") or "Unknown Resource"),
+            "resource_type": str(record.get("resource_type") or "Cloud Resource"),
+            "type": "cost_optimization",
+            "action": str(record.get("description") or record.get("action") or "Review this resource"),
+            "potential_savings": claimable_savings,
+            "severity": str(record.get("severity") or "medium"),
+            "savings_estimate_status": str(record.get("savings_estimate_status") or "withheld_unassessed"),
+        })
+
+    return {
+        **opt_result,
+        "potential_savings": _coerce_scan_recommendation_savings(opt_result.get("potential_savings")),
+        "recommendations": recommendations,
+        "waste_distribution": [
+            {"category_name": category, "value": round(value, 2)}
+            for category, value in waste_by_type.items()
+        ],
+        "governance_findings": [],
+        "alerts": [],
+    }
+
+
+async def _replace_scan_waste_distribution(
+    *,
+    db: MongoDBClient,
+    user_id: str,
+    integration_id: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    """Replace one integration's waste distribution with ledger-backed values."""
+    try:
+        await db.delete(
+            "waste_distribution",
+            {"user_id": user_id, "integration_id": integration_id},
+        )
+        if rows:
+            await db.upsert("waste_distribution", [
+                {**row, "user_id": user_id, "integration_id": integration_id}
+                for row in rows
+            ])
+    except Exception as error:
+        logger.warning("Failed to replace ledger-backed waste distribution: %s", error)
 
 
 async def _clear_pending_notifications_for_integration(
@@ -2251,16 +2326,7 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                 # Use optimization engine results
                 verified = findings
                 potential_savings = opt_result.get("potential_savings", 0)
-                ai_confidence = opt_result.get("ai_confidence_score", 75)
-
-                # Fallback: compute savings from scanner findings if optimization engine found none
-                if potential_savings <= 0:
-                    for f in findings:
-                        f_status = str(f.get("status") or "").lower()
-                        f_cost = float(f.get("cost") or 0)
-                        if f_status in ("waste", "zombie", "underutilized") and f_cost > 0:
-                            potential_savings += f_cost
-                    potential_savings = round(potential_savings, 2)
+                ai_confidence = opt_result.get("ai_confidence_score", 0)
 
                 # Use REAL subscription cost if available
                 scan_summary = getattr(scanner, '_scan_summary', {})
@@ -2271,19 +2337,6 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                     logger.info(f"Using real Azure cost: ${total_spend:.2f}")
                 else:
                     total_spend = sum(f.get("cost", 0) for f in findings)
-
-                # Fallback: if engine found no savings but scanner flagged waste with real billing
-                if potential_savings <= 0:
-                    deterministic_savings = 0.0
-                    for f in findings:
-                        f_status = str(f.get("status") or "").lower()
-                        f_meta = f.get("metadata") or {}
-                        f_source = str(f_meta.get("cost_source") or "").lower()
-                        f_cost = float(f.get("cost") or 0)
-                        if f_status in ("zombie", "waste", "stopped") and f_source == "actual" and f_cost > 0:
-                            deterministic_savings += f_cost
-                    if deterministic_savings > 0:
-                        potential_savings = round(deterministic_savings, 2)
 
                 opt_stats = opt_result.get("stats", {})
                 logger.info(
@@ -2336,40 +2389,12 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                 else:
                     logger.info("Skipping spend history save — Azure Cost Management returned no data (likely rate-limited)")
 
-                # Update waste distribution (only if we have real waste data — don't clear previous good data)
-                if ai_stats.get("waste_distribution"):
-                    waste_data = [
-                        {**w, "user_id": user_id, "integration_id": integration_id}
-                        for w in ai_stats["waste_distribution"]
-                    ]
-                    await db.upsert_waste_distribution(waste_data)
-                else:
-                    # Build waste_distribution from scanner findings directly when optimization
-                    # engine has no data (Cost Management was rate-limited but scanner still found resources)
-                    scanner_waste: dict[str, float] = {}
-                    for f in findings:
-                        f_status = str(f.get("status") or "").lower()
-                        f_cost = float(f.get("cost") or 0)
-                        f_waste_type = str(f.get("waste_type") or "").lower()
-                        if f_status in ("waste", "zombie", "underutilized") and f_cost > 0:
-                            cat_map = {
-                                "zombie_vm": "Zombie VMs",
-                                "stopped_vm": "Stopped VMs",
-                                "underutilized": "Underutilized Resources",
-                                "orphaned_disk": "Orphaned Disks",
-                                "unused_ip": "Unused IPs",
-                                "autoscale_candidate": "Autoscale Candidates",
-                                "schedule_candidate": "Scheduling Candidates",
-                            }
-                            cat = cat_map.get(f_waste_type, "Other Waste")
-                            scanner_waste[cat] = scanner_waste.get(cat, 0) + f_cost
-                    if scanner_waste:
-                        waste_data = [
-                            {"category_name": k, "value": round(v, 2), "user_id": user_id, "integration_id": integration_id}
-                            for k, v in scanner_waste.items()
-                        ]
-                        await db.upsert_waste_distribution(waste_data)
-                        logger.info(f"Built waste_distribution from scanner findings: {len(waste_data)} categories")
+                await _replace_scan_waste_distribution(
+                    db=db,
+                    user_id=user_id,
+                    integration_id=integration_id,
+                    rows=ai_stats.get("waste_distribution", []),
+                )
                 
                 # Insert AI recommendations as notifications
                 await send_scan_progress(user_id, integration_id, 85, "Generating AI recommendations...")
@@ -2381,38 +2406,6 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                     if r.get("resource_name")
                 }
                 
-                # Build deterministic recommendations from scanner findings
-                # These are generated regardless of whether AI succeeds
-                scanner_notifications = []
-                for finding in db_resources:
-                    waste_type = finding.get("waste_type")
-                    waste_reason = finding.get("waste_reason")
-                    status = finding.get("status", "")
-                    if not waste_type and status not in ("zombie", "waste", "underutilized", "non_compliant"):
-                        continue
-                    if not waste_reason:
-                        continue
-                    rname = finding.get("resource_name", "")
-                    db_resource_id = resource_id_map.get(rname.lower())
-                    severity = "high" if status in ("zombie", "waste") else "medium"
-                    scanner_notifications.append({
-                        "user_id": user_id,
-                        "resource_id": db_resource_id,
-                        "type": "cost_optimization",
-                        "status": "pending",
-                        "recommendation": waste_reason,
-                        "action": waste_type or "review",
-                        "metadata": {
-                            "resource_name": rname,
-                            "resource_type": finding.get("service_type", "Cloud Resource"),
-                            "severity": severity,
-                            "description": waste_reason,
-                            "integration_id": integration_id,
-                            "potential_savings": finding.get("cost", 0),
-                            "source": "scanner",
-                        },
-                    })
-
                 # Clear old notifications THEN insert new ones
                 try:
                     await _clear_pending_notifications_for_integration(
@@ -2423,7 +2416,6 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                 except Exception as error:
                     logger.warning("Could not clear old Azure notifications: %s", error)
 
-                # Insert AI recommendations if available
                 all_notifications = []
                 if ai_stats.get("recommendations"):
                     for rec in ai_stats["recommendations"]:
@@ -2438,22 +2430,9 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                             )
                         )
 
-                # Merge: AI recommendations take priority, scanner fills the gaps
-                ai_resource_names = {
-                    (n.get("metadata") or {}).get("resource_name", "").lower()
-                    for n in all_notifications
-                }
-                for sn in scanner_notifications:
-                    sn_name = (sn.get("metadata") or {}).get("resource_name", "").lower()
-                    if sn_name not in ai_resource_names:
-                        all_notifications.append(sn)
-
                 if all_notifications:
                     await db.create_notifications(all_notifications)
-                    logger.info("Inserted %d recommendations (%d AI + %d scanner) for Azure",
-                                len(all_notifications),
-                                len(all_notifications) - len(scanner_notifications),
-                                len(scanner_notifications))
+                    logger.info("Inserted %d ledger-backed recommendation notifications for Azure", len(all_notifications))
                 
                 # Generate governance policies 
                 await send_scan_progress(user_id, integration_id, 88, "Generating governance policies...")
@@ -2739,6 +2718,7 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                 db=db,
                 gemini_api_key=gemini_key,
             )
+            ai_stats = _build_optimization_compatibility_stats(opt_result)
 
             opt_stats = optimization_result.get("stats", {})
             logger.info(
@@ -2858,17 +2838,12 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
             result=result,
         )
         
-        # Update waste distribution
-        if ai_stats.get("waste_distribution"):
-            waste_data = [
-                {
-                    **w,
-                    "user_id": user_id,
-                    "integration_id": integration_id
-                }
-                for w in ai_stats["waste_distribution"]
-            ]
-            await db.upsert_waste_distribution(waste_data)
+        await _replace_scan_waste_distribution(
+            db=db,
+            user_id=user_id,
+            integration_id=integration_id,
+            rows=ai_stats.get("waste_distribution", []),
+        )
         
         # Refresh recommendations only when the provider returned a usable inventory.
         if unique_resources:
@@ -3752,11 +3727,12 @@ async def generate_fix_script(
     request: GenerateFixRequest,
     user: ClerkUser = Depends(get_current_user),
     db: MongoDBClient = Depends(get_db_client)
-):
-    """Generate and persist a validated deterministic CLI remediation template."""
+) -> GenerateFixResponse:
+    """Generate a trusted template-based command for an owned resource."""
     try:
         user_id = user.id
         notification_id = request.notification_id
+
         notifications = await db.select(
             "agent_notifications",
             filters={"id": notification_id, "user_id": user_id}
@@ -3765,115 +3741,132 @@ async def generate_fix_script(
             raise HTTPException(status_code=404, detail="Notification not found")
 
         notification = notifications[0]
-        if str(notification.get("user_id") or "") != user_id:
+        if (
+            notification.get("id") != notification_id
+            or notification.get("user_id") != user_id
+        ):
             raise HTTPException(status_code=404, detail="Notification not found")
 
-        metadata = notification.get("metadata")
-        if not isinstance(metadata, dict):
-            metadata = {}
-        resource_id = str(notification.get("resource_id") or "").strip()
-        if not resource_id:
+        metadata_value = notification.get("metadata")
+        metadata = metadata_value if isinstance(metadata_value, dict) else {}
+        action_type = str(notification.get("action") or "").strip().casefold()
+
+        resource_row_id = notification.get("resource_id")
+        if not isinstance(resource_row_id, str) or not resource_row_id.strip():
             raise HTTPException(
-                status_code=409,
-                detail="Recommendation is not linked to a current resource. Run a fresh scan first.",
+                status_code=422,
+                detail=UNSUPPORTED_FIX_TEMPLATE_MESSAGE,
             )
 
         resources = await db.select(
             "resources",
-            filters={"id": resource_id, "user_id": user_id},
+            filters={"id": resource_row_id, "user_id": user_id},
         )
         if not resources:
-            raise HTTPException(
-                status_code=409,
-                detail="The linked resource snapshot no longer exists. Run a fresh scan first.",
-            )
-        resource = resources[0]
-        if str(resource.get("user_id") or "") != user_id:
             raise HTTPException(status_code=404, detail="Resource not found")
 
-        resource_metadata = resource.get("metadata")
-        if not isinstance(resource_metadata, dict):
-            resource_metadata = {}
-        resource_name = str(resource.get("resource_name") or metadata.get("resource_name") or "")
-        provider = str(resource.get("provider") or "")
-        service_type = str(resource.get("service_type") or metadata.get("resource_type") or "")
-        region = str(resource.get("region") or "")
-        cloud_resource_id = str(resource.get("cloud_resource_id") or "")
-        action_type = _normalize_scan_recommendation_action_type(str(
-            metadata.get("action_type") or notification.get("action") or ""
-        ))
+        resource = resources[0]
+        if (
+            resource.get("id") != resource_row_id
+            or resource.get("user_id") != user_id
+        ):
+            raise HTTPException(status_code=404, detail="Resource not found")
 
-        from ..ai.fix_generator import UnsupportedFixTemplateError, get_fix_generator
+        provider = resource.get("provider")
+        service_type = resource.get("service_type")
+        cloud_resource_id = resource.get("cloud_resource_id")
+        if not all(
+            isinstance(value, str) and bool(value.strip())
+            for value in (provider, service_type, cloud_resource_id)
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=UNSUPPORTED_FIX_TEMPLATE_MESSAGE,
+            )
 
+        resource_name_value = resource.get("resource_name")
+        resource_name = (
+            resource_name_value
+            if isinstance(resource_name_value, str)
+            else ""
+        )
+        region_value = resource.get("region")
+        region = region_value if isinstance(region_value, str) else ""
         generator = get_fix_generator()
-        try:
-            if action_type in {"delete", "terminate", "remove"}:
-                script = await generator.generate_delete_command(
-                    provider=provider,
-                    service_type=service_type,
-                    resource_id=cloud_resource_id,
-                    resource_name=resource_name,
-                    region=region,
-                    metadata=metadata,
-                )
-            elif action_type in {"resize", "rightsize", "downsize"}:
-                current_size = next(
-                    (
-                        str(resource_metadata.get(key) or resource.get(key) or "").strip()
-                        for key in ("instance_type", "vm_size", "sku", "size")
-                        if str(resource_metadata.get(key) or resource.get(key) or "").strip()
-                    ),
-                    "unknown",
-                )
-                recommended_size = next(
-                    (
-                        str(metadata.get(key) or "").strip()
-                        for key in (
-                            "recommended_instance_type",
-                            "target_instance_type",
-                            "recommended_sku",
-                            "target_sku",
-                            "recommended_size",
-                            "target_size",
-                        )
-                        if str(metadata.get(key) or "").strip()
-                    ),
-                    "",
-                )
-                script = await generator.generate_resize_command(
-                    provider=provider,
-                    service_type=service_type,
-                    resource_id=cloud_resource_id,
-                    current_size=current_size,
-                    recommended_size=recommended_size,
-                    region=region,
-                )
-            elif action_type in {"stop", "shutdown", "deallocate"}:
-                script = await generator.generate_stop_command(
-                    provider=provider,
-                    service_type=service_type,
-                    resource_id=cloud_resource_id,
-                    resource_name=resource_name,
-                    region=region,
-                )
-            else:
-                raise UnsupportedFixTemplateError(
-                    "This recommendation does not have a supported deterministic action"
-                )
-        except UnsupportedFixTemplateError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
 
-        await db.update(
+        if action_type in {"delete", "terminate"}:
+            script = await generator.generate_delete_command(
+                provider=provider,
+                service_type=service_type,
+                resource_id=cloud_resource_id,
+                resource_name=resource_name,
+                region=region,
+                metadata=metadata,
+            )
+        elif action_type in {"stop", "deallocate"}:
+            script = await generator.generate_stop_command(
+                provider=provider,
+                service_type=service_type,
+                resource_id=cloud_resource_id,
+                resource_name=resource_name,
+                region=region,
+            )
+        elif action_type in {"resize", "rightsize"}:
+            recommended_size = metadata.get("recommended_size")
+            if not isinstance(recommended_size, str) or not recommended_size.strip():
+                raise HTTPException(
+                    status_code=422,
+                    detail=UNSUPPORTED_FIX_TEMPLATE_MESSAGE,
+                )
+            current_size_value = metadata.get("current_size")
+            current_size = (
+                current_size_value
+                if isinstance(current_size_value, str)
+                else ""
+            )
+            script = await generator.generate_resize_command(
+                provider=provider,
+                service_type=service_type,
+                resource_id=cloud_resource_id,
+                current_size=current_size,
+                recommended_size=recommended_size,
+                region=region,
+            )
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail=UNSUPPORTED_FIX_TEMPLATE_MESSAGE,
+            )
+
+        updated_notifications = await db.update(
             "agent_notifications",
             {"generated_script": script},
             {"id": notification_id, "user_id": user_id},
         )
-        logger.debug("Generated deterministic fix script for notification %s", notification_id)
+        update_preserved_ownership = (
+            isinstance(updated_notifications, list)
+            and any(
+                isinstance(updated, dict)
+                and updated.get("id") == notification_id
+                and updated.get("user_id") == user_id
+                for updated in updated_notifications
+            )
+        )
+        if not update_preserved_ownership:
+            raise HTTPException(status_code=404, detail="Notification not found")
+
+        logger.debug("Generated trusted fix script for notification %s", notification_id)
         return GenerateFixResponse(success=True, script=script)
     except HTTPException:
         raise
+    except UnsupportedFixTemplateError as error:
+        logger.warning("Trusted fix template unavailable for notification %s", request.notification_id)
+        raise HTTPException(
+            status_code=422,
+            detail=UNSUPPORTED_FIX_TEMPLATE_MESSAGE,
+        ) from error
     except Exception as error:
-        logger.error("generate_fix_script failed: %s", error)
+        logger.error("generate_fix_script failed: %s", type(error).__name__, exc_info=True)
         raise HTTPException(status_code=500, detail="Fix script generation failed.")
 
 
@@ -4779,4 +4772,3 @@ async def public_bill_scan(
         redacted.get("waste_grade"),
     )
     return redacted
-

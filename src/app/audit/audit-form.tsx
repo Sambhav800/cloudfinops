@@ -4,7 +4,15 @@ import { useState } from "react";
 import { CheckCircle, Lock, ChevronDown, Loader2 } from "lucide-react";
 import Link from "next/link";
 
+interface AuditRequestResponse {
+    success?: boolean;
+    message?: string;
+    error?: string;
+    confirmationEmailSent?: boolean;
+}
+
 export function AuditForm() {
+    const [formStartedAt] = useState(() => Date.now());
     const [submitted, setSubmitted] = useState(false);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
@@ -23,6 +31,13 @@ export function AuditForm() {
             cloudProviders.push(cb.value);
         });
 
+        if (cloudProviders.length === 0) {
+            setError("Select at least one cloud provider.");
+            setLoading(false);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            return;
+        }
+
         const payload = {
             firstName: formData.get("firstName") as string,
             lastName: formData.get("lastName") as string,
@@ -38,6 +53,8 @@ export function AuditForm() {
             monthlySpend: formData.get("monthlySpend") as string,
             primaryConcern: formData.get("primaryConcern") as string,
             notes: formData.get("notes") as string,
+            website: formData.get("website") as string,
+            formStartedAt,
         };
 
         try {
@@ -47,18 +64,20 @@ export function AuditForm() {
                 body: JSON.stringify(payload),
             });
 
-            const data = await res.json();
+            let data: AuditRequestResponse = {};
+            try {
+                data = await res.json() as AuditRequestResponse;
+            } catch {
+                data = {};
+            }
 
             if (!res.ok) {
-                // If the server returns an error, specifically show it
                 const errorMessage = data.error || "Submission failed. Please try again or email us directly.";
                 setError(errorMessage);
-                // Scroll to top to see error
                 window.scrollTo({ top: 0, behavior: 'smooth' });
                 return;
             }
 
-            // Success: clear everything and show success message
             setSubmitted(true);
             window.scrollTo({ top: 0, behavior: 'smooth' });
 
@@ -82,7 +101,7 @@ export function AuditForm() {
                     </div>
                     <h2 className="text-3xl font-bold text-white mb-4">Request Received!</h2>
                     <p className="text-gray-300 mb-2">
-                        We&apos;ve sent a confirmation to your email.
+                        Our audit team has been notified.
                     </p>
                     <p className="text-gray-400 text-sm mb-8">
                         Our team will review your cloud setup and get back to you within 24 hours with the next steps for your free audit.
@@ -152,6 +171,11 @@ export function AuditForm() {
                         )}
 
                         <form onSubmit={handleSubmit} className="space-y-6">
+                            <div className="absolute left-[-9999px] h-px w-px overflow-hidden" aria-hidden="true">
+                                <label htmlFor="website">Website</label>
+                                <input id="website" name="website" type="text" tabIndex={-1} autoComplete="off" />
+                            </div>
+
                             {/* Name */}
                             <div className="grid grid-cols-2 gap-4">
                                 <Input name="firstName" label="First Name" placeholder="John" required />

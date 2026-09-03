@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 
 from ..config import GEMINI_API_KEY, GEMINI_BILL_MODEL
+from ..core.gemini_models import resolve_gemini_model_name
 from .parser import _categorize_service
 
 logger = logging.getLogger(__name__)
@@ -322,7 +323,7 @@ async def extract_bill_with_gemini(
         )
         return None
 
-    model_name = os.environ.get("BILL_ANALYSIS_GEMINI_MODEL") or GEMINI_BILL_MODEL
+    configured_model = os.environ.get("BILL_ANALYSIS_GEMINI_MODEL") or GEMINI_BILL_MODEL
     payload = {
         "contents": [
             {
@@ -344,8 +345,9 @@ async def extract_bill_with_gemini(
         },
     }
 
-    url = f"{GEMINI_API_BASE}/models/{model_name}:generateContent?key={api_key}"
     try:
+        model_name = await resolve_gemini_model_name(configured_model, api_key=api_key)
+        url = f"{GEMINI_API_BASE}/models/{model_name}:generateContent?key={api_key}"
         async with httpx.AsyncClient(timeout=_GEMINI_BILL_TIMEOUT_SECONDS) as client:
             response = await client.post(url, json=payload)
             response.raise_for_status()

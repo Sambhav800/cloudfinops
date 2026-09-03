@@ -4,9 +4,14 @@ Merges results from parallel scanners, deduplicates, and ranks by cost impact.
 """
 from google.adk import Agent
 
+from ...config import DEFAULT_GEMINI_FLASH_MODEL, GEMINI_AGENT_MODEL
+from ...core.gemini_models import is_gemini_auto_model
+
+_ADK_MODEL = DEFAULT_GEMINI_FLASH_MODEL if is_gemini_auto_model(GEMINI_AGENT_MODEL) else GEMINI_AGENT_MODEL
+
 synthesizer_agent = Agent(
     name="Findings_Synthesizer",
-    model="gemini-3.5-flash",
+    model=_ADK_MODEL,
     include_contents="none",
     instruction="""You are the Findings Synthesizer. Your job is to consolidate multi-cloud scanner results into a prioritized action plan.
 

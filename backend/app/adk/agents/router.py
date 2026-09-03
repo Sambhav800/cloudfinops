@@ -5,12 +5,16 @@ and checks learned patterns before dispatching expensive operations.
 """
 from google.adk import Agent
 
+from ...config import DEFAULT_GEMINI_FLASH_MODEL, GEMINI_AGENT_MODEL
+from ...core.gemini_models import is_gemini_auto_model
 from ..tools.db_tools import get_portfolio_summary, get_zombie_resources, get_cost_by_service, get_recent_alerts
 from ..tools.memory_tools import recall_learned_patterns
 
+_ADK_MODEL = DEFAULT_GEMINI_FLASH_MODEL if is_gemini_auto_model(GEMINI_AGENT_MODEL) else GEMINI_AGENT_MODEL
+
 router_agent = Agent(
     name="FinOps_Router",
-    model="gemini-3.5-flash",
+    model=_ADK_MODEL,
     instruction="""You are the FinOps Router Agent for CloudFinOps — an enterprise multi-cloud cost optimization platform.
 
 YOUR DECISION FRAMEWORK:

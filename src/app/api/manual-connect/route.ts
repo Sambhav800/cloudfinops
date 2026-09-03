@@ -3,6 +3,8 @@ import { auth } from '@clerk/nextjs/server';
 
 import { createBackendIntegration, triggerBackendScan } from '@/lib/api';
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
     return NextResponse.json(
         { error: 'Use POST. Credentials in URL query params are blocked for security.' },
