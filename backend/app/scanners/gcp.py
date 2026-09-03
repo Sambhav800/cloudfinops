@@ -18,6 +18,7 @@ import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Any, Set, Tuple
 
 from google.cloud import compute_v1
@@ -25,6 +26,13 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 from ..core.retry import call_with_backoff, is_gcp_retryable
+from ..core.workload_patterns import (
+    MetricTimeSeries,
+    classify_pattern,
+    generate_recommendation,
+    WorkloadPattern,
+    RecommendationType,
+)
 
 logger = logging.getLogger(__name__)
 COST_SOURCE_ACTUAL = "actual"
@@ -587,8 +595,11 @@ class GCPScanner:
 
         total_spend = billed_total_spend if billed_total_spend > 0 else sum(r.cost for r in resources)
         potential_savings = round(
-            sum(r.cost for r in resources if str(r.status).lower() == "zombie"),
-            2
+            sum(
+                r.cost for r in resources
+                if str(r.status).lower() in ("zombie", "stopped", "idle")
+            ),
+            2,
         )
 
         return ScanResult(
@@ -604,6 +615,279 @@ class GCPScanner:
         )
 
     # ------------------------------------------------------------------
+    # Cloud Monitoring Hourly Metrics (for workload pattern analysis)
+    # ------------------------------------------------------------------
+
+    def _get_gce_metrics_hourly(self, instance_id: str, zone: str, lookback_days: int = 30) -> Optional[List[float]]:
+        """
+        Fetch hourly CPU utilization from GCP Cloud Monitoring for workload pattern analysis.
+
+        Uses ``compute.googleapis.com/instance/cpu/utilization`` (returned as a
+        0-1 fraction) aligned to 3600-second intervals.  Values are converted to
+        percentages (0-100) before being returned.
+
+        Args:
+            instance_id: Numeric instance ID (e.g. ``"1234567890"``).
+            zone: Zone name (e.g. ``"us-central1-a"``).
+            lookback_days: Number of days of history to fetch (default 30).
+
+        Returns a chronologically-ordered list of hourly CPU averages
+        (up to 720 points for 30 days), or None if insufficient data.
+        """
+        try:
+            from google.cloud import monitoring_v3
+            from google.protobuf import timestamp_pb2
+
+            client = monitoring_v3.MetricServiceClient(credentials=self.credentials)
+
+            end_time = datetime.now(timezone.utc)
+            start_time = end_time - timedelta(days=lookback_days)
+
+            end_ts = timestamp_pb2.Timestamp()
+            end_ts.FromDatetime(end_time)
+            start_ts = timestamp_pb2.Timestamp()
+            start_ts.FromDatetime(start_time)
+
+            interval = monitoring_v3.TimeInterval(
+                start_time=start_ts,
+                end_time=end_ts,
+            )
+            aggregation = monitoring_v3.Aggregation(
+                alignment_period={"seconds": 3600},
+                per_series_aligner=monitoring_v3.Aggregation.Aligner.ALIGN_MEAN,
+            )
+
+            instance_filter = (
+                f'metric.type = "compute.googleapis.com/instance/cpu/utilization" '
+                f'AND resource.labels.instance_id = "{instance_id}" '
+                f'AND resource.labels.zone = "{zone}"'
+            )
+
+            results = self._gcp_call(
+                f"GCP Cloud Monitoring hourly CPU ({instance_id})",
+                lambda: list(client.list_time_series(
+                    request={
+                        "name": f"projects/{self.project_id}",
+                        "filter": instance_filter,
+                        "interval": interval,
+                        "view": monitoring_v3.ListTimeSeriesRequest.TimeSeriesView.FULL,
+                        "aggregation": aggregation,
+                    }
+                )),
+            )
+
+            hourly_values: List[float] = []
+            for ts in results:
+                for point in ts.points:
+                    # GCP returns CPU utilization as 0–1 fraction; convert to percentage
+                    cpu_pct = point.value.double_value * 100.0
+                    hourly_values.append(cpu_pct)
+
+            # Cloud Monitoring returns points newest-first; reverse for chronological order
+            hourly_values.reverse()
+
+            if len(hourly_values) < 48:
+                return None
+
+            return hourly_values
+
+        except ImportError:
+            logger.debug("google-cloud-monitoring not installed; skipping hourly metrics for %s", instance_id)
+            return None
+        except Exception as e:
+            logger.debug("Hourly metrics fetch failed for %s: %s", instance_id, e)
+            return None
+
+    # ------------------------------------------------------------------
+    # VM workload classification (Zombie / Idle / Active)
+    # ------------------------------------------------------------------
+
+    def _classify_running_vm(
+        self,
+        monitoring_client,
+        instance,
+        zone_name: str,
+        machine_type_short: str,
+        monthly_cost: float,
+        meta: Dict[str, Any],
+    ) -> None:
+        """
+        Classify a running GCE instance into Zombie, Idle, or Active using
+        7-day summary metrics and 30-day hourly workload pattern analysis.
+
+        Writes the classification result directly into *meta* dict:
+        - ``vm_status``: "Zombie" | "Idle" | "Active"
+        - workload pattern fields (peak_trough_ratio, recommendation_type, etc.)
+        """
+        from google.cloud import monitoring_v3
+        from google.protobuf import timestamp_pb2
+
+        project_name = f"projects/{self.project_id}"
+        instance_id = str(instance.id)
+        end_time = datetime.now(timezone.utc)
+        start_time_7d = end_time - timedelta(days=7)
+
+        end_ts = timestamp_pb2.Timestamp()
+        end_ts.FromDatetime(end_time)
+        start_ts_7d = timestamp_pb2.Timestamp()
+        start_ts_7d.FromDatetime(start_time_7d)
+
+        interval_7d = monitoring_v3.TimeInterval(start_time=start_ts_7d, end_time=end_ts)
+
+        # --- 7-day daily CPU average ---
+        avg_cpu_7d = None
+        try:
+            cpu_agg = monitoring_v3.Aggregation(
+                alignment_period={"seconds": 86400},
+                per_series_aligner=monitoring_v3.Aggregation.Aligner.ALIGN_MEAN,
+            )
+            cpu_filter = (
+                f'metric.type = "compute.googleapis.com/instance/cpu/utilization" '
+                f'AND resource.labels.instance_id = "{instance_id}" '
+                f'AND resource.labels.zone = "{zone_name}"'
+            )
+            cpu_results = self._gcp_call(
+                f"GCP 7d CPU ({instance.name})",
+                lambda: list(monitoring_client.list_time_series(
+                    request={
+                        "name": project_name,
+                        "filter": cpu_filter,
+                        "interval": interval_7d,
+                        "view": monitoring_v3.ListTimeSeriesRequest.TimeSeriesView.FULL,
+                        "aggregation": cpu_agg,
+                    }
+                )),
+            )
+            cpu_values = []
+            for ts in cpu_results:
+                for point in ts.points:
+                    cpu_values.append(point.value.double_value * 100.0)
+            if cpu_values:
+                avg_cpu_7d = sum(cpu_values) / len(cpu_values)
+                meta["avg_cpu_7d"] = round(avg_cpu_7d, 2)
+                meta["cpu_datapoints"] = len(cpu_values)
+            else:
+                meta["avg_cpu_7d"] = None
+                meta["cpu_datapoints"] = 0
+        except Exception:
+            meta["avg_cpu_7d"] = None
+
+        # --- 7-day network bytes (sent + received) ---
+        total_network_mb = 0.0
+        try:
+            net_agg = monitoring_v3.Aggregation(
+                alignment_period={"seconds": 86400},
+                per_series_aligner=monitoring_v3.Aggregation.Aligner.ALIGN_SUM,
+            )
+            for metric_type, meta_key in [
+                ("compute.googleapis.com/instance/network/sent_bytes_count", "network_out_mb"),
+                ("compute.googleapis.com/instance/network/received_bytes_count", "network_in_mb"),
+            ]:
+                net_filter = (
+                    f'metric.type = "{metric_type}" '
+                    f'AND resource.labels.instance_id = "{instance_id}" '
+                    f'AND resource.labels.zone = "{zone_name}"'
+                )
+                net_results = self._gcp_call(
+                    f"GCP 7d network ({instance.name})",
+                    lambda: list(monitoring_client.list_time_series(
+                        request={
+                            "name": project_name,
+                            "filter": net_filter,
+                            "interval": interval_7d,
+                            "view": monitoring_v3.ListTimeSeriesRequest.TimeSeriesView.FULL,
+                            "aggregation": net_agg,
+                        }
+                    )),
+                )
+                net_bytes = 0.0
+                for ts in net_results:
+                    for point in ts.points:
+                        net_bytes += point.value.int64_value
+                mb = net_bytes / (1024 * 1024)
+                meta[meta_key] = round(mb, 2)
+                total_network_mb += mb
+        except Exception:
+            pass
+
+        # --- Zombie detection: CPU < 2% and network < 1 MB over 7 days ---
+        if avg_cpu_7d is not None and avg_cpu_7d < 2.0 and total_network_mb < 1.0:
+            meta["vm_status"] = "Zombie"
+            meta["waste_reason"] = (
+                f"IDLE: avg CPU {avg_cpu_7d:.1f}%, network {total_network_mb:.1f} MB "
+                f"over 7 days. Running but processing no workload."
+            )
+            meta["workload_pattern"] = "zombie_idle"
+            return
+
+        # --- 30-day workload pattern analysis ---
+        try:
+            hourly_data = self._get_gce_metrics_hourly(instance_id, zone_name, lookback_days=30)
+            if hourly_data and len(hourly_data) >= 48:
+                series = MetricTimeSeries(hourly_values=hourly_data, metric_name="cpu")
+                analysis = classify_pattern(series)
+
+                # Estimate vCPU count from machine type name
+                vcpu_guess = 2
+                try:
+                    # GCP machine types: e2-standard-4, n2-custom-8-32768, etc.
+                    parts = machine_type_short.split("-")
+                    for part in reversed(parts):
+                        if part.isdigit():
+                            vcpu_guess = int(part)
+                            break
+                except Exception:
+                    pass
+
+                rec = generate_recommendation(
+                    analysis,
+                    current_vm_size=machine_type_short,
+                    current_monthly_cost=monthly_cost,
+                    current_vm_vcpus=max(vcpu_guess, 1),
+                )
+
+                # Populate metadata with pattern analysis results
+                meta["workload_pattern"] = analysis.pattern.value
+                meta["peak_trough_ratio"] = analysis.peak_trough_ratio
+                meta["peak_avg_cpu"] = analysis.peak_avg
+                meta["trough_avg_cpu"] = analysis.trough_avg
+                meta["p90_cpu"] = analysis.p90
+                meta["p95_cpu"] = analysis.p95
+                meta["observation_days"] = analysis.observation_days
+                meta["recommendation_type"] = rec.type.value
+                meta["recommendation_explanation"] = rec.explanation
+                meta["estimated_savings_pct"] = rec.estimated_savings_pct
+                meta["pattern_confidence"] = rec.confidence
+
+                if rec.autoscale:
+                    meta["autoscale_min_instances"] = rec.autoscale.min_instances
+                    meta["autoscale_max_instances"] = rec.autoscale.max_instances
+                    meta["autoscale_scale_out_cpu"] = rec.autoscale.scale_out_cpu_pct
+                    meta["autoscale_scale_in_cpu"] = rec.autoscale.scale_in_cpu_pct
+                    meta["autoscale_cooldown_min"] = rec.autoscale.cooldown_minutes
+
+                if rec.schedule:
+                    meta["schedule_stop_days"] = rec.schedule.stop_days
+                    meta["schedule_savings_pct"] = rec.schedule.estimated_savings_pct
+
+                # Classify: actionable recommendation → Idle; else → Active
+                if rec.type in (
+                    RecommendationType.AUTOSCALE,
+                    RecommendationType.SCHEDULE,
+                    RecommendationType.RIGHTSIZE,
+                    RecommendationType.SPOT_CANDIDATE,
+                ):
+                    meta["vm_status"] = "Idle"
+                    meta["waste_reason"] = rec.explanation
+                else:
+                    meta["vm_status"] = "Active"
+            else:
+                meta["workload_pattern"] = "unknown"
+        except Exception as e:
+            logger.debug("Workload pattern analysis failed for %s: %s", instance.name, e)
+            meta["workload_pattern"] = "unknown"
+
+    # ------------------------------------------------------------------
     # Compute Engine Instances
     # ------------------------------------------------------------------
 
@@ -613,6 +897,16 @@ class GCPScanner:
         def scan():
             resources, waste, savings = [], [], 0.0
             active_count, carbon = 0, 0.0
+
+            # Initialise Cloud Monitoring client for 7-day/30-day metric queries
+            monitoring_client = None
+            try:
+                from google.cloud import monitoring_v3
+                monitoring_client = monitoring_v3.MetricServiceClient(credentials=self.credentials)
+            except ImportError:
+                logger.debug("google-cloud-monitoring not installed; VM workload analysis will be skipped")
+            except Exception as e:
+                logger.debug("Cloud Monitoring client init failed: %s", e)
 
             try:
                 client = compute_v1.InstancesClient(credentials=self.credentials)
@@ -631,13 +925,16 @@ class GCPScanner:
                         machine_type_url = instance.machine_type or ""
                         monthly_cost = 0.0
                         is_stopped = instance.status in ("TERMINATED", "STOPPED", "SUSPENDED")
-                        status_str = "Zombie" if is_stopped else "Active"
                         resource_id = f"gcp-instance-{self.project_id}-{instance.name}-{zone_name}"
 
+                        # Multi-status: Stopped → Zombie (idle) → Idle (underutilized) → Active
                         if is_stopped:
+                            status_str = "Stopped"
                             savings += monthly_cost
                             waste.append({"category_name": "Stopped Instances", "value": monthly_cost})
                         else:
+                            # Will be refined to Zombie/Idle/Active below
+                            status_str = "Active"
                             active_count += 1
                             from ..core.carbon_model import estimate_monthly_carbon_kg
                             machine_type_short = machine_type_url.split("/")[-1] if machine_type_url else ""
@@ -713,6 +1010,27 @@ class GCPScanner:
                                     f"Attached {accel_count}× {gpu_model} accelerator. "
                                     "Consider dedicated GPU machine types (A2/G2) for better price-performance."
                                 )
+
+                        # -------------------------------------------------------
+                        # Workload pattern analysis for running instances
+                        # -------------------------------------------------------
+                        if not is_stopped and monitoring_client:
+                            try:
+                                self._classify_running_vm(
+                                    monitoring_client, instance, zone_name,
+                                    mt_short, monthly_cost, instance_metadata,
+                                )
+                                # _classify_running_vm writes 'vm_status' into instance_metadata
+                                classified = instance_metadata.get("vm_status")
+                                if classified:
+                                    status_str = classified
+                            except Exception as e:
+                                logger.debug("Workload analysis failed for %s: %s", instance.name, e)
+                                instance_metadata["workload_pattern"] = "unknown"
+
+                        if status_str == "Idle":
+                            savings += monthly_cost
+                            waste.append({"category_name": "Idle Instances", "value": monthly_cost})
 
                         resources.append(ScannedResource(
                             resource_name=instance.name,
