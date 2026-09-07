@@ -40,13 +40,16 @@ type EvidenceDrawerState = {
     evidence: RecommendationEvidenceRecord[];
     verification: RecommendationSavingsVerificationResponse | null;
     aiEnrichment: RecommendationAIEnrichmentResponse | null;
+    evidenceCard: EvidenceCardData | null;
     loading: boolean;
     verificationLoading: boolean;
     aiLoading: boolean;
     aiActionLoading: boolean;
+    evidenceCardLoading: boolean;
     error: string | null;
     verificationError: string | null;
     aiError: string | null;
+    evidenceCardError: string | null;
 };
 
 const FILTERS: Array<{ id: StateFilter; label: string }> = [
@@ -759,22 +762,60 @@ export function RecommendationLedgerView({ initialData }: { initialData: Recomme
         }
     };
 
+    const loadEvidenceCard = async (recommendation: RecommendationRecord) => {
+        setDrawer((current) => current && current.recommendation.id === recommendation.id
+            ? { ...current, evidenceCardLoading: true, evidenceCardError: null }
+            : current);
+
+        try {
+            const response = await fetch(`/api/recommendations/${encodeURIComponent(recommendation.id)}/evidence-card`, {
+                method: "GET",
+                cache: "no-store",
+            });
+            const payload: unknown = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(parseErrorMessage(payload, "Evidence card could not be loaded"));
+            }
+
+            setDrawer((current) => current && current.recommendation.id === recommendation.id
+                ? {
+                    ...current,
+                    evidenceCard: payload as EvidenceCardData,
+                    evidenceCardLoading: false,
+                    evidenceCardError: null,
+                }
+                : current);
+        } catch (error) {
+            setDrawer((current) => current && current.recommendation.id === recommendation.id
+                ? {
+                    ...current,
+                    evidenceCardLoading: false,
+                    evidenceCardError: error instanceof Error ? error.message : "Evidence card could not be loaded",
+                }
+                : current);
+        }
+    };
+
     const openEvidenceDrawer = async (recommendation: RecommendationRecord) => {
         setDrawer({
             recommendation,
             evidence: [],
             verification: null,
             aiEnrichment: null,
+            evidenceCard: null,
             loading: true,
             verificationLoading: true,
             aiLoading: true,
             aiActionLoading: false,
+            evidenceCardLoading: true,
             error: null,
             verificationError: null,
             aiError: null,
+            evidenceCardError: null,
         });
         setRequestError(null);
         void loadAiEnrichment(recommendation);
+        void loadEvidenceCard(recommendation);
 
         try {
             const response = await fetch(`/api/recommendations/${encodeURIComponent(recommendation.id)}/evidence`, {
@@ -1185,7 +1226,25 @@ export function RecommendationLedgerView({ initialData }: { initialData: Recomme
 
                         {/* EVIDENCE CARD & SAFETY CLEARANCE CHECKLIST COMPONENT */}
                         <div className="mt-6">
-                            <EvidenceCard cardData={buildEvidenceCardFromDrawer(drawer.recommendation, drawer.evidence)} />
+                            {drawer.evidenceCardLoading ? (
+                                <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-5 space-y-4">
+                                    <div className="flex items-center justify-between">
+                                        <Skeleton className="h-5 w-48 bg-slate-800" />
+                                        <Skeleton className="h-6 w-20 rounded-full bg-slate-800" />
+                                    </div>
+                                    <Skeleton className="h-4 w-full bg-slate-800" />
+                                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-2">
+                                        <Skeleton className="h-16 rounded-xl bg-slate-800" />
+                                        <Skeleton className="h-16 rounded-xl bg-slate-800" />
+                                        <Skeleton className="h-16 rounded-xl bg-slate-800" />
+                                    </div>
+                                    <Skeleton className="h-24 rounded-xl bg-slate-800" />
+                                </div>
+                            ) : drawer.evidenceCard ? (
+                                <EvidenceCard cardData={drawer.evidenceCard} />
+                            ) : (
+                                <EvidenceCard cardData={buildEvidenceCardFromDrawer(drawer.recommendation, drawer.evidence)} />
+                            )}
                         </div>
 
                         <div className="mt-6 grid gap-3 sm:grid-cols-4">

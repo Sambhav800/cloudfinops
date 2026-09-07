@@ -11,6 +11,8 @@ test("recommendation ledger view is backed by ledger APIs and shows trust eviden
 
     assert.match(source, /RecommendationLedgerView/);
     assert.match(source, /\/api\/recommendations\/\$\{encodeURIComponent\(recommendation\.id\)\}\/evidence/);
+    assert.match(source, /\/api\/recommendations\/\$\{encodeURIComponent\(recommendation\.id\)\}\/evidence-card/);
+    assert.match(source, /loadEvidenceCard/);
     assert.match(source, /\/api\/recommendations\/\$\{encodeURIComponent\(recommendation\.id\)\}\/state/);
     assert.match(source, /\/api\/recommendations\/provider-ingest/);
     assert.match(source, /\/api\/recommendations\/\$\{encodeURIComponent\(recommendation\.id\)\}\/verification/);

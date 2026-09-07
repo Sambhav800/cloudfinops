@@ -30,6 +30,10 @@ async function loadAiEnrichmentRunRouteSource() {
     return readFile(new URL("./ai-enrichment/run/route.ts", import.meta.url), "utf8");
 }
 
+async function loadEvidenceCardRouteSource() {
+    return readFile(new URL("./[recommendationId]/evidence-card/route.ts", import.meta.url), "utf8");
+}
+
 test("recommendations list route proxies ledger reads through backend auth", async () => {
     const source = await loadListRouteSource();
 
@@ -52,6 +56,17 @@ test("recommendations evidence route keeps evidence access user-scoped through b
     assert.match(source, /\/api\/recommendations\/\$\{encodeURIComponent\(normalizedId\)\}\/evidence/);
     assert.doesNotMatch(source, /createClient\(/);
     assert.doesNotMatch(source, /\.from\("recommendation_evidence"\)/);
+});
+
+test("recommendations evidence-card route proxies evidence card requests through backend auth", async () => {
+    const source = await loadEvidenceCardRouteSource();
+
+    assert.match(source, /fetchWithBackendAuthFallback/);
+    assert.match(source, /getBackendAuthContext/);
+    assert.match(source, /hasBackendAuthCandidate/);
+    assert.match(source, /\/api\/recommendations\/\$\{encodeURIComponent\(normalizedId\)\}\/evidence-card/);
+    assert.doesNotMatch(source, /createClient\(/);
+    assert.doesNotMatch(source, /MONGODB_URI/);
 });
 
 test("recommendations state route validates state before proxying mutation", async () => {
