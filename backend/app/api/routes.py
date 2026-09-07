@@ -1816,16 +1816,9 @@ async def get_integrations(
 ):
     """Get all cloud integrations for the current user."""
     integrations = await db.get_user_integrations(user.id)
-    try:
-        from ..core.scheduled_scans import sync_user_scan_targets
-
-        await sync_user_scan_targets(db, user.id)
-    except Exception as error:
-        logger.warning(
-            "Scheduled scan registry refresh skipped for %s: %s",
-            user.id,
-            type(error).__name__,
-        )
+    # NOTE: scheduled_scans module removed — sync_user_scan_targets was
+    # never implemented and the failed import burned Azure Cost Management
+    # rate limit budget on every integrations list request.
     await log_audit_event(
         user_id=user.id,
         action_type="INTEGRATIONS_VIEWED",

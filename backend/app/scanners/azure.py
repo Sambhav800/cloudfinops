@@ -13,6 +13,7 @@ Version: 2.0.0
 """
 
 import json
+import time
 import os
 import logging
 import urllib.error
@@ -163,8 +164,23 @@ class AzureWasteScanner:
         
         logger.info(f"AzureWasteScanner initialized for subscription: {subscription_id}")
 
-    def _azure_call(self, operation_name: str, func):
-        return call_with_backoff(operation_name, func, is_retryable=is_azure_retryable)
+    def _azure_call(self, operation_name: str, func, *, base_delay: float = 1.0, max_delay: float = 16.0):
+        return call_with_backoff(
+            operation_name, func,
+            is_retryable=is_azure_retryable,
+            base_delay=base_delay,
+            max_delay=max_delay,
+        )
+
+    def _azure_cost_call(self, operation_name: str, func):
+        """Cost Management API has strict rate limits (~30 req/5 min). Use longer backoff."""
+        return call_with_backoff(
+            operation_name, func,
+            is_retryable=is_azure_retryable,
+            max_attempts=5,
+            base_delay=15.0,
+            max_delay=90.0,
+        )
 
     def _azure_list(self, operation_name: str, func) -> list[Any]:
         return self._azure_call(operation_name, lambda: list(func()))
@@ -620,7 +636,7 @@ class AzureWasteScanner:
                 ),
             )
 
-            result = self._azure_call(
+            result = self._azure_cost_call(
                 "Azure Cost Management resource usage query",
                 lambda: cost_client.query.usage(
                     scope=scope,
@@ -669,7 +685,7 @@ class AzureWasteScanner:
             )
 
             try:
-                daily_result = self._azure_call(
+                daily_result = self._azure_cost_call(
                     "Azure Cost Management daily resource usage query",
                     lambda: cost_client.query.usage(
                         scope=scope,
@@ -786,7 +802,7 @@ class AzureWasteScanner:
                 ),
             )
 
-            result = self._azure_call(
+            result = self._azure_cost_call(
                 "Azure Cost Management service usage query",
                 lambda: cost_client.query.usage(
                     scope=scope,
@@ -832,7 +848,7 @@ class AzureWasteScanner:
                     ),
                 )
 
-                daily_result = self._azure_call(
+                daily_result = self._azure_cost_call(
                     "Azure Cost Management daily subscription totals query",
                     lambda: cost_client.query.usage(
                         scope=scope,
@@ -2272,11 +2288,12 @@ class AzureWasteScanner:
         # Reset findings
         self.findings = []
         
-        # Fetch real cost data from Azure Cost Management
-        # This runs ONCE before all modules, and each module can use
-        # self._real_costs and self._subscription_costs
+        # Fetch real cost data from Azure Cost Management.
+        # Rate limit: ~30 req/5 min. Space out the two queries to avoid 429.
         logger.info("Fetching cost data from Azure Cost Management...")
         self._real_costs = self._fetch_real_costs()
+        if self._real_costs:
+            time.sleep(5)
         self._subscription_costs = self._fetch_subscription_cost_by_service()
         
         if self._real_costs:

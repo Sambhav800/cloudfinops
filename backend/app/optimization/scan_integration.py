@@ -80,7 +80,12 @@ async def run_optimization_pipeline(
 
     # Phase 2: Convert scanner findings to EvidenceBundles
     bundles = []
+    paas_resource_ids: set[str] = set()
     for finding in findings:
+        service_type = finding.get("service_type", "")
+        if _is_paas_resource(service_type):
+            rid = finding.get("cloud_resource_id") or finding.get("resource_name", "")
+            paas_resource_ids.add(rid)
         bundle = _finding_to_evidence_bundle(finding, provider, graph)
         bundles.append(bundle)
 
@@ -90,6 +95,20 @@ async def run_optimization_pipeline(
 
     # Phase 4: Run classification pipeline
     verdicts = await engine.classify(bundles)
+
+    # Phase 4.5: Override PaaS resources — they lack VM metrics and must not be
+    # classified as waste. Force them to WELL_UTILIZED with zero confidence.
+    for verdict in verdicts:
+        if verdict.resource_id in paas_resource_ids and verdict.classification not in (
+            ResourceClassification.WELL_UTILIZED,
+            ResourceClassification.PROTECTED,
+            ResourceClassification.INSUFFICIENT_DATA,
+        ):
+            verdict.classification = ResourceClassification.WELL_UTILIZED
+            verdict.confidence = 0.0
+            verdict.waste_reason = ""
+            verdict.recommendation = None
+            verdict.estimated_monthly_waste = 0.0
 
     # Phase 5: AI verification for ambiguous cases only
     ai_review_count = 0
@@ -324,6 +343,40 @@ def _finding_to_evidence_bundle(
         cloud_resource_id=resource_id,
         relationships=relationships,
     )
+
+
+PAAS_RESOURCE_TYPE_PATTERNS = (
+    "microsoft.cognitiveservices",
+    "microsoft.machinelearningservices",
+    "microsoft.openai",
+    "microsoft.web/sites",
+    "microsoft.web/serverfarms",
+    "microsoft.sql/servers",
+    "microsoft.documentdb",
+    "microsoft.cache/redis",
+    "microsoft.servicebus",
+    "microsoft.eventhub",
+    "microsoft.keyvault",
+    "microsoft.storage/storageaccounts",
+    "microsoft.containerregistry",
+    "microsoft.signalrservice",
+    "microsoft.search",
+    "microsoft.apimanagement",
+    "microsoft.datafactory",
+    "microsoft.databricks",
+    "microsoft.synapse",
+    "microsoft.logic",
+    "microsoft.media",
+    "microsoft.maps",
+    "microsoft.botservice",
+    "microsoft.communication",
+)
+
+
+def _is_paas_resource(service_type: str) -> bool:
+    """PaaS resources lack VM-style metrics and shouldn't be classified as waste."""
+    lower = service_type.lower()
+    return any(pattern in lower for pattern in PAAS_RESOURCE_TYPE_PATTERNS)
 
 
 def _map_scanner_status_to_state(status: str, metadata: Dict[str, Any]) -> str:
