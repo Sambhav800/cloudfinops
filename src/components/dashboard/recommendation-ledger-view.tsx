@@ -165,9 +165,9 @@ function buildEvidenceCardFromDrawer(
     const lowerName = resName.toLowerCase();
 
     // 5 Veto Checks
-    const drFlagged = lowerName.includes("dr") || lowerName.includes("standby") || lowerName.includes("failover");
-    const asgFlagged = lowerName.includes("asg text") || lowerName.includes("fleet");
-    const bgFlagged = lowerName.includes("blue") || lowerName.includes("green") || lowerName.includes("canary");
+    const drFlagged = /\bdr\b|disaster.recovery|standby|failover/i.test(lowerName);
+    const asgFlagged = /\basg\b|autoscal|scale.set|fleet/i.test(lowerName);
+    const bgFlagged = /[-_](blue|green|canary|shadow)[-_]?/i.test(lowerName);
     const recentStateChange = false;
     const backupFlagged = lowerName.includes("backup") || lowerName.includes("replication");
 
@@ -214,32 +214,32 @@ function buildEvidenceCardFromDrawer(
         cpu: {
             key: "cpu",
             name: "CPU Utilization",
-            status: "passed",
-            observed_value: cpuEvidence?.observed_value ?? 3.2,
-            observed_display: cpuEvidence ? `Observed: ${cpuEvidence.observed_value}%` : "Avg 3.2% / P95 7.8%",
+            status: cpuEvidence ? "passed" : "missing",
+            observed_value: cpuEvidence?.observed_value ?? null,
+            observed_display: cpuEvidence ? `Observed: ${cpuEvidence.observed_value}%` : "No CPU metrics available",
             threshold_display: "< 15.0%",
-            description: cpuEvidence?.description || "Average CPU utilization remained below 15.0% threshold.",
-            is_missing: false,
+            description: cpuEvidence?.description || "CPU telemetry unavailable for this resource.",
+            is_missing: !cpuEvidence,
         },
         network: {
             key: "network",
             name: "Network I/O",
-            status: "passed",
-            observed_value: netEvidence?.observed_value ?? 12,
-            observed_display: netEvidence ? `Observed: ${netEvidence.observed_value} MB/d` : "In 12 MB/d | Out 4 MB/d",
+            status: netEvidence ? "passed" : "missing",
+            observed_value: netEvidence?.observed_value ?? null,
+            observed_display: netEvidence ? `Observed: ${netEvidence.observed_value} MB/d` : "No network metrics available",
             threshold_display: "< 50 MB/day",
-            description: netEvidence?.description || "Minimal network bandwidth activity recorded.",
-            is_missing: false,
+            description: netEvidence?.description || "Network telemetry unavailable for this resource.",
+            is_missing: !netEvidence,
         },
         disk: {
             key: "disk",
             name: "Disk Operations",
-            status: "passed",
-            observed_value: diskEvidence?.observed_value ?? 1.2,
-            observed_display: diskEvidence ? `Observed: ${diskEvidence.observed_value} ops/s` : "Read 1.2 ops/s | Write 0.4 ops/s",
+            status: diskEvidence ? "passed" : "missing",
+            observed_value: diskEvidence?.observed_value ?? null,
+            observed_display: diskEvidence ? `Observed: ${diskEvidence.observed_value} ops/s` : "No disk metrics available",
             threshold_display: "< 10 ops/s",
-            description: diskEvidence?.description || "Disk activity remained negligible over observation window.",
-            is_missing: false,
+            description: diskEvidence?.description || "Disk telemetry unavailable for this resource.",
+            is_missing: !diskEvidence,
         },
         memory: {
             key: "memory",
