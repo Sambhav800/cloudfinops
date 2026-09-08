@@ -173,13 +173,13 @@ class AzureWasteScanner:
         )
 
     def _azure_cost_call(self, operation_name: str, func):
-        """Cost Management API has strict rate limits (~30 req/5 min). Use longer backoff."""
+        """Cost Management API has strict rate limits (~30 req/5 min). Fail fast on 429."""
         return call_with_backoff(
             operation_name, func,
             is_retryable=is_azure_retryable,
-            max_attempts=5,
-            base_delay=15.0,
-            max_delay=90.0,
+            max_attempts=2,
+            base_delay=30.0,
+            max_delay=60.0,
         )
 
     def _azure_list(self, operation_name: str, func) -> list[Any]:
@@ -726,12 +726,14 @@ class AzureWasteScanner:
             return cost_map
             
         except HttpResponseError as e:
-            if "AuthorizationFailed" in str(e) or "403" in str(e):
+            error_str = str(e)
+            if "429" in error_str or "Too many requests" in error_str:
+                self._cost_rate_limited = True
+                logger.warning("Azure Cost Management rate-limited (429). Exact resource costs unavailable.")
+            elif "AuthorizationFailed" in error_str or "403" in error_str:
                 logger.warning(
                     "Cost Management Reader role not granted. "
-                    "Exact Azure resource costs unavailable. Ask user to assign "
-                    "'Cost Management Reader' role to the service "
-                    "principal."
+                    "Exact Azure resource costs unavailable."
                 )
             else:
                 logger.warning(
@@ -740,6 +742,9 @@ class AzureWasteScanner:
                 )
             return {}
         except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "Too many requests" in error_str:
+                self._cost_rate_limited = True
             logger.warning(
                 f"Could not fetch real costs (falling back to "
                 f"billing-unavailable resource costs): {e}"
@@ -2289,12 +2294,21 @@ class AzureWasteScanner:
         self.findings = []
         
         # Fetch real cost data from Azure Cost Management.
-        # Rate limit: ~30 req/5 min. Space out the two queries to avoid 429.
+        # Rate limit: ~30 req/5 min. If resource costs 429, skip subscription
+        # costs entirely to avoid burning the rate limit budget further.
         logger.info("Fetching cost data from Azure Cost Management...")
+        self._cost_rate_limited = False
         self._real_costs = self._fetch_real_costs()
-        if self._real_costs:
-            time.sleep(5)
-        self._subscription_costs = self._fetch_subscription_cost_by_service()
+        if self._cost_rate_limited:
+            logger.warning(
+                "Azure Cost Management rate-limited — skipping subscription cost query. "
+                "Wait 15-30 min before rescanning to let the rate limit reset."
+            )
+            self._subscription_costs = {}
+        else:
+            if self._real_costs:
+                time.sleep(5)
+            self._subscription_costs = self._fetch_subscription_cost_by_service()
         
         if self._real_costs:
             logger.info(
