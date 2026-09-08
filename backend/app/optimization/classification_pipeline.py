@@ -339,8 +339,36 @@ def _check_oversized(
     )
 
     if is_cpu_oversized:
-        # Estimate savings (assume 50% downsize possible)
+        # Try specific SKU recommendation via rightsizing engine
+        target_sku = None
+        rightsize_description = "Downsize to a smaller instance type matching actual utilization"
         estimated_savings = evidence.monthly_cost * 0.5
+        savings_pct = 50.0
+
+        try:
+            from ..core.rightsizing_engine import recommend_rightsizing
+            rec = recommend_rightsizing(
+                provider=evidence.provider,
+                instance_type=evidence.resource_type.split()[-1] if " " in evidence.resource_type else evidence.resource_type,
+                p95_cpu=cpu_signal.p95 if hasattr(cpu_signal, "p95") else cpu_signal.p90,
+                monthly_cost=evidence.monthly_cost,
+            )
+            if not rec:
+                vm_size = (evidence.tags or {}).get("vm_size") or (evidence.tags or {}).get("instance_type", "")
+                if vm_size:
+                    rec = recommend_rightsizing(
+                        provider=evidence.provider,
+                        instance_type=vm_size,
+                        p95_cpu=cpu_signal.p95 if hasattr(cpu_signal, "p95") else cpu_signal.p90,
+                        monthly_cost=evidence.monthly_cost,
+                    )
+            if rec:
+                target_sku = rec.target_sku
+                savings_pct = rec.estimated_savings_pct
+                estimated_savings = evidence.monthly_cost * savings_pct / 100
+                rightsize_description = rec.reason
+        except Exception:
+            pass
 
         return ResourceVerdict(
             resource_id=evidence.resource_id,
@@ -357,10 +385,11 @@ def _check_oversized(
             ],
             recommendation=Recommendation(
                 action=RecommendedAction.RIGHTSIZE,
-                description="Downsize to a smaller instance type matching actual utilization",
+                description=rightsize_description,
                 estimated_monthly_savings=estimated_savings,
                 effort="medium",
                 risk="low",
+                target_sku=target_sku,
             ),
             estimated_monthly_waste=estimated_savings,
             waste_reason=f"P90 CPU at {cpu_signal.p90:.1f}% over {evidence.observation_days} days — significantly oversized",

@@ -208,13 +208,16 @@ class OptimizationEngine:
             }
 
             if verdict.recommendation:
-                update["metadata_updates"]["optimization"]["recommendation"] = {
+                rec_data = {
                     "action": verdict.recommendation.action.value,
                     "description": verdict.recommendation.description,
                     "estimated_savings": verdict.recommendation.estimated_monthly_savings,
                     "effort": verdict.recommendation.effort,
                     "risk": verdict.recommendation.risk,
                 }
+                if verdict.recommendation.target_sku:
+                    rec_data["target_sku"] = verdict.recommendation.target_sku
+                update["metadata_updates"]["optimization"]["recommendation"] = rec_data
 
             updates.append(update)
 

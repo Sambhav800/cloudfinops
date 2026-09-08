@@ -87,6 +87,7 @@ class Recommendation:
     effort: str = "low"  # low | medium | high
     risk: str = "low"  # low | medium | high
     script_hint: Optional[str] = None  # CLI command template
+    target_sku: Optional[str] = None  # specific smaller SKU from rightsizing engine
 
 
 @dataclass

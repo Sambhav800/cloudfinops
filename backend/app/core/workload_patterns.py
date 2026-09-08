@@ -411,14 +411,48 @@ def generate_recommendation(
         rec_type = RecommendationType.RIGHTSIZE
         severity = "medium"
 
-        explanation = (
-            f"Steady-state workload at {analysis.p90:.0f}% P90 utilization "
-            f"(over {analysis.observation_days} days, CV={analysis.coefficient_of_variation:.2f}). "
-            f"This resource is consistently over-provisioned. "
-            f"Rightsize to a smaller SKU that handles P95 ({analysis.p95:.0f}%) + 30% buffer = "
-            f"{min(analysis.p95 * 1.3, 100):.0f}% target utilization."
-        )
-        savings_pct = round(max(0, (1 - (analysis.p95 * 1.3 / 100)) * 50), 1)
+        # Try to get a specific target SKU recommendation
+        rightsize_rec = None
+        if current_vm_size:
+            try:
+                from .rightsizing_engine import recommend_rightsizing
+                provider = "azure"
+                if current_vm_size.startswith(("m", "c", "r", "t", "i", "x", "p", "g", "a", "d", "h", "z")) and "." in current_vm_size:
+                    provider = "aws"
+                elif current_vm_size.startswith(("e2-", "n1-", "n2-", "c2-", "c3-", "t2d-", "t2a-")):
+                    provider = "gcp"
+                rightsize_rec = recommend_rightsizing(
+                    provider=provider,
+                    instance_type=current_vm_size,
+                    p95_cpu=analysis.p95,
+                    monthly_cost=current_monthly_cost,
+                )
+            except Exception:
+                pass
+
+        if rightsize_rec:
+            target_size = rightsize_rec.target_sku
+            savings_pct = rightsize_rec.estimated_savings_pct
+            estimated_dollar_savings = round(current_monthly_cost * savings_pct / 100, 2) if current_monthly_cost > 0 else 0
+            explanation = (
+                f"Steady-state workload at {analysis.p90:.0f}% P90 utilization "
+                f"(over {analysis.observation_days} days, CV={analysis.coefficient_of_variation:.2f}). "
+                f"Downsize {current_vm_size} → {target_size} "
+                f"({rightsize_rec.current_vcpus} → {rightsize_rec.target_vcpus} vCPUs). "
+                f"P95 CPU ({analysis.p95:.0f}%) + 30% buffer fits comfortably on {rightsize_rec.target_vcpus} vCPUs. "
+                f"Saves ~{savings_pct:.0f}%"
+                f"{f' (${estimated_dollar_savings:.0f}/mo)' if estimated_dollar_savings > 0 else ''}."
+            )
+        else:
+            target_size = None
+            explanation = (
+                f"Steady-state workload at {analysis.p90:.0f}% P90 utilization "
+                f"(over {analysis.observation_days} days, CV={analysis.coefficient_of_variation:.2f}). "
+                f"This resource is consistently over-provisioned. "
+                f"Rightsize to a smaller SKU that handles P95 ({analysis.p95:.0f}%) + 30% buffer = "
+                f"{min(analysis.p95 * 1.3, 100):.0f}% target utilization."
+            )
+            savings_pct = round(max(0, (1 - (analysis.p95 * 1.3 / 100)) * 50), 1)
 
     elif analysis.pattern == WorkloadPattern.BURST_SPORADIC:
         rec_type = RecommendationType.SPOT_CANDIDATE
