@@ -140,8 +140,10 @@ export function BillDropzone({ onFileReady, disabled = false }: BillDropzoneProp
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/10 ring-1 ring-emerald-500/30">
               <FileText className="h-7 w-7 text-emerald-400" />
             </div>
-            <div className="space-y-1">
-              <p className="font-semibold text-white">{selectedFile.name}</p>
+            <div className="max-w-xs space-y-1">
+              <p className="truncate font-semibold text-white" title={selectedFile.name}>
+                {selectedFile.name}
+              </p>
               <p className="text-sm text-slate-400">{formatBytes(selectedFile.size)}</p>
             </div>
             <button
