@@ -35,7 +35,7 @@ export function ConversionCTA() {
             "Full resource inventory",
             "Executable CLI fix scripts",
             "Cross-cloud pricing tables",
-            "All findings (not just top 3)",
+            "Automated remediation steps",
             "Continuous monitoring",
             "AI recommendations",
           ].map((item) => (
