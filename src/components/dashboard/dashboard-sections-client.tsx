@@ -9,6 +9,7 @@ import type { FinanceBudgetEvent, FinanceForecastResponse } from "@/lib/api";
 import { DashboardOverview } from "@/components/dashboard/overview";
 import { CostScoreSection } from "@/components/dashboard/cost-score-section";
 import { RescanButton } from "@/components/dashboard/rescan-button";
+import { CommitmentOptimizerCard } from "@/components/dashboard/commitments/commitment-optimizer-card";
 import type {
     DashboardFinanceAccountSummary,
 } from "@/components/dashboard/dashboard-finance-summary";
@@ -224,6 +225,10 @@ export function DashboardSectionsClient({
                     Run a scan to populate cost, confidence, and sustainability metrics for this dashboard.
                 </div>
             )}
+
+            <div className="mb-8">
+                <CommitmentOptimizerCard />
+            </div>
 
             <DashboardOverview
                 stats={stats}

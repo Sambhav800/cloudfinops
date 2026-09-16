@@ -6,7 +6,7 @@ Handles scan triggers, resource fetching, and AI analysis.
 import asyncio
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, File, UploadFile, Form, Request
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, File, UploadFile, Form, Request, Query
 from fastapi.responses import Response
 from typing import Any, Optional, List
 from pydantic import BaseModel, Field
@@ -4239,6 +4239,108 @@ async def get_api_cost_per_request(
     except Exception as e:
         logger.error("API cost-per-request failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="API cost analysis failed.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Commitment Optimizer
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/commitment-recommendations")
+async def get_commitment_recommendations(
+    coverage_target: float = Query(75.0, ge=10.0, le=100.0, description="Target baseline coverage percentage"),
+    max_term: Optional[str] = Query(None, description="Max commitment term: 1_year or 3_year"),
+    payment_option: Optional[str] = Query(None, description="Payment preference: all_upfront, partial_upfront, no_upfront"),
+    user: ClerkUser = Depends(get_current_user),
+    db: MongoDBClient = Depends(get_db_client),
+):
+    """
+    Generate purchase recommendations (AWS SP, Azure RI, GCP CUD)
+    from steady-state usage baselines and existing commitments.
+    """
+    try:
+        from dataclasses import asdict
+        from ..core.commitment_optimizer import (
+            analyze_usage_baselines,
+            generate_commitment_recommendations,
+            OptimizerConfig,
+            Term,
+            PaymentOption,
+            UsageBaseline,
+        )
+
+        term_enum = Term.THREE_YEAR if max_term == "3_year" else Term.ONE_YEAR
+        payment_enum = (
+            PaymentOption.ALL_UPFRONT if payment_option == "all_upfront"
+            else PaymentOption.PARTIAL_UPFRONT if payment_option == "partial_upfront"
+            else PaymentOption.NO_UPFRONT
+        )
+
+        config = OptimizerConfig(
+            coverage_target_pct=float(coverage_target),
+            max_term=term_enum,
+            preferred_payment=payment_enum,
+        )
+
+        # 1. Fetch user active integrations
+        active_integrations = await _get_active_integrations(db, user.id)
+        all_baselines: list[UsageBaseline] = []
+
+        if active_integrations:
+            for integration in active_integrations:
+                provider = str(integration.get("provider") or "aws").lower()
+                iid = integration.get("id")
+                resources = await db.get_resources(user.id, iid)
+                daily_spend = await db.get_daily_spend_history(user.id, iid, days=90)
+                baselines = analyze_usage_baselines(resources, daily_spend, provider)
+                all_baselines.extend(baselines)
+
+        # Fallback if no active integrations with baselines: check global user resources and spend
+        if not all_baselines:
+            general_resources = await db.get_resources(user.id)
+            general_spend = await db.get_daily_spend_history(user.id, days=90)
+            if general_resources or general_spend:
+                providers_present = {
+                    str(r.get("provider") or "aws").lower()
+                    for r in general_resources
+                    if str(r.get("provider") or "").strip()
+                } or {"aws"}
+                for p in providers_present:
+                    p_res = [r for r in general_resources if str(r.get("provider") or "aws").lower() == p]
+                    baselines = analyze_usage_baselines(p_res, general_spend, p)
+                    all_baselines.extend(baselines)
+
+        # Adjust min_observation_days if user has sufficient data (>= 7 days) but < 30 days
+        if all_baselines:
+            min_days = min(b.observation_days for b in all_baselines)
+            if min_days < config.min_observation_days and min_days >= 7:
+                config.min_observation_days = min_days
+
+        # 2. Fetch existing commitments to calculate utilization, waste, and expiring alerts
+        existing_commitments: list[dict[str, Any]] = []
+        try:
+            raw_commitments = await commitment_engine.get_commitments(user.id)
+            for c in raw_commitments:
+                if hasattr(c, "model_dump"):
+                    existing_commitments.append(c.model_dump())
+                elif hasattr(c, "dict"):
+                    existing_commitments.append(c.dict())
+                elif isinstance(c, dict):
+                    existing_commitments.append(c)
+        except Exception as comm_err:
+            logger.warning("Failed to retrieve existing commitments for user %s: %s", user.id, comm_err)
+
+        # 3. Generate portfolio recommendations
+        portfolio = generate_commitment_recommendations(
+            baselines=all_baselines,
+            existing_commitments=existing_commitments,
+            config=config,
+        )
+
+        return asdict(portfolio)
+
+    except Exception as e:
+        logger.error("Commitment recommendation generation failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Commitment recommendation analysis failed.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

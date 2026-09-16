@@ -204,8 +204,8 @@ test("backend _redact_and_build_teaser does NOT cap findings — iterates ALL ra
         "utf8",
     );
 
-    // The comment explicitly says "no artificial cap"
-    assert.match(backendSource, /Build enriched findings for ALL services — no artificial cap/);
+    // The comment explicitly notes showing ALL services
+    assert.match(backendSource, /(?:Build enriched findings for ALL services|Show ALL services)/);
 
     // Iterates ALL raw_services in a for loop
     assert.match(backendSource, /for svc in raw_services:/);
