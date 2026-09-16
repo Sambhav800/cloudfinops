@@ -32,12 +32,12 @@ class FakeBudgetEventsDB:
         ]
         self.history_by_integration = {
             "int-aws": [
-                {"spend_date": "2026-03-01", "amount": 20.0, "currency": "USD"},
-                {"spend_date": "2026-03-02", "amount": 21.0, "currency": "USD"},
-                {"spend_date": "2026-03-03", "amount": 22.0, "currency": "USD"},
-                {"spend_date": "2026-03-04", "amount": 23.0, "currency": "USD"},
-                {"spend_date": "2026-03-05", "amount": 24.0, "currency": "USD"},
-                {"spend_date": "2026-03-06", "amount": 25.0, "currency": "USD"},
+                {"spend_date": "2026-03-01", "amount": 20.0, "currency": "INR"},
+                {"spend_date": "2026-03-02", "amount": 21.0, "currency": "INR"},
+                {"spend_date": "2026-03-03", "amount": 22.0, "currency": "INR"},
+                {"spend_date": "2026-03-04", "amount": 23.0, "currency": "INR"},
+                {"spend_date": "2026-03-05", "amount": 24.0, "currency": "INR"},
+                {"spend_date": "2026-03-06", "amount": 25.0, "currency": "INR"},
             ]
         }
         self.budget_events = []
@@ -118,6 +118,7 @@ def test_sync_budget_events_for_user_persists_and_dedupes(monkeypatch):
 
     assert len(created) == 2
     assert {event["scope"] for event in created} == {"portfolio", "integration"}
+    assert {event["currency"] for event in created} == {"INR"}
     assert {event["event_type"] for event in created} == {"forecasted_over_budget"}
     assert len(fake_db.notifications) == 2
     assert len(sent_whatsapp) == 1
@@ -138,12 +139,12 @@ def test_sync_budget_events_for_user_records_recovered_transition(monkeypatch):
     asyncio.run(sync_budget_events_for_user(user_id="user-1", db=fake_db, deliver=False))
 
     fake_db.history_by_integration["int-aws"] = [
-        {"spend_date": "2026-03-01", "amount": 5.0, "currency": "USD"},
-        {"spend_date": "2026-03-02", "amount": 5.0, "currency": "USD"},
-        {"spend_date": "2026-03-03", "amount": 5.0, "currency": "USD"},
-        {"spend_date": "2026-03-04", "amount": 5.0, "currency": "USD"},
-        {"spend_date": "2026-03-05", "amount": 5.0, "currency": "USD"},
-        {"spend_date": "2026-03-06", "amount": 5.0, "currency": "USD"},
+        {"spend_date": "2026-03-01", "amount": 5.0, "currency": "INR"},
+        {"spend_date": "2026-03-02", "amount": 5.0, "currency": "INR"},
+        {"spend_date": "2026-03-03", "amount": 5.0, "currency": "INR"},
+        {"spend_date": "2026-03-04", "amount": 5.0, "currency": "INR"},
+        {"spend_date": "2026-03-05", "amount": 5.0, "currency": "INR"},
+        {"spend_date": "2026-03-06", "amount": 5.0, "currency": "INR"},
     ]
 
     recovered_events = asyncio.run(

@@ -513,46 +513,63 @@ class TestGetCommitmentRecommendations:
     @pytest.mark.asyncio
     @patch("app.ai.mcp_server.get_db_client")
     async def test_aws_recommendations(self, mock_get_db):
+        from datetime import datetime, timezone
+        from app.core.commitment_recommendations import SOURCE
+
         db = _mock_db()
-        # First call = dashboard_stats, second = cloud_integrations
-        db.select = AsyncMock(side_effect=[
-            [{"total_spend": 5000}],  # dashboard_stats
-            [{"provider": "aws", "status": "active"}],  # cloud_integrations
-        ])
+        now = datetime.now(timezone.utc).isoformat()
+        db.get_user_integrations = AsyncMock(return_value=[{"id": "aws-1", "provider": "aws", "status": "active"}])
+        db.select = AsyncMock(return_value=[{
+            "integration_id": "aws-1", "account_id": "123456789012", "source": SOURCE,
+            "status": "ready", "fetched_at": now, "generated_at": now,
+            "scenarios": [{"label": "1-year Compute Savings Plan", "monthly_commitment_usd": 730,
+                "monthly_saving_usd": 200, "annual_saving_usd": 2400, "term_years": 1,
+                "hourly_commitment_usd": 1, "integration_id": "aws-1", "account_id": "123456789012",
+                "recommendation_id": "native-1", "generated_at": now}],
+        }])
         mock_get_db.return_value = db
         result = await get_commitment_recommendations(user_id="user-1")
-        assert result["total_monthly_spend"] == 5000.0
+        assert result["status"] == "ready"
         assert len(result["recommendations"]) == 1
-        assert result["recommendations"][0]["provider"] == "AWS"
-        assert "Savings Plan" in result["recommendations"][0]["type"]
+        assert result["recommendations"][0]["monthly_saving_usd"] == 200
+        assert result["recommendations"] == result["scenarios"]
+        assert result["recommended_scenario"] is None
+        db.select.assert_awaited_once_with("commitment_purchase_snapshots", filters={"user_id": "user-1"})
 
     @pytest.mark.asyncio
     @patch("app.ai.mcp_server.get_db_client")
-    async def test_multi_cloud_recommendations(self, mock_get_db):
+    async def test_connected_clouds_do_not_create_fabricated_recommendations(self, mock_get_db):
         db = _mock_db()
-        db.select = AsyncMock(side_effect=[
-            [{"total_spend": 10000}],
-            [
-                {"provider": "aws", "status": "active"},
-                {"provider": "azure", "status": "active"},
-                {"provider": "gcp", "status": "active"},
-            ],
+        db.get_user_integrations = AsyncMock(return_value=[
+            {"id": "aws-1", "provider": "aws", "status": "active"},
+            {"id": "azure-1", "provider": "azure", "status": "active"},
+            {"id": "gcp-1", "provider": "gcp", "status": "active"},
         ])
         mock_get_db.return_value = db
         result = await get_commitment_recommendations(user_id="user-1")
-        assert len(result["recommendations"]) == 3
-        providers = {r["provider"] for r in result["recommendations"]}
-        assert providers == {"AWS", "Azure", "GCP"}
+        assert result["status"] == "not_synced"
+        assert result["recommendations"] == []
 
     @pytest.mark.asyncio
     @patch("app.ai.mcp_server.get_db_client")
     async def test_no_integrations(self, mock_get_db):
         db = _mock_db()
-        db.select = AsyncMock(side_effect=[[], []])
+        db.get_user_integrations = AsyncMock(return_value=[])
         mock_get_db.return_value = db
         result = await get_commitment_recommendations(user_id="user-1")
         assert result["recommendations"] == []
-        assert result["total_monthly_spend"] == 0
+        assert result["status"] == "no_spend_data"
+
+    @pytest.mark.asyncio
+    @patch("app.ai.mcp_server.get_db_client")
+    async def test_failure_does_not_fall_back_to_generic_purchase_advice(self, mock_get_db):
+        db = _mock_db()
+        db.get_user_integrations = AsyncMock(side_effect=RuntimeError("secret connection"))
+        mock_get_db.return_value = db
+        result = await get_commitment_recommendations(user_id="user-1")
+        assert result["status"] == "unavailable"
+        assert result["recommendations"] == []
+        assert "secret" not in str(result)
 
 
 # ---------------------------------------------------------------------------

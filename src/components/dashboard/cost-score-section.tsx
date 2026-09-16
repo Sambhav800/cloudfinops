@@ -5,13 +5,7 @@ import { motion } from "framer-motion";
 import { SavingsCopilotCard } from "@/components/dashboard/savings-copilot-card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatInrCurrency } from "@/lib/resources/contract";
-
-interface ProviderCost {
-    provider: string;
-    spend: number;
-    resources: number;
-    savings: number;
-}
+import type { DashboardMtdSpend, DashboardProviderCost } from "@/lib/dashboard/data";
 
 interface CostScoreProps {
     totalSpend: number;
@@ -20,7 +14,8 @@ interface CostScoreProps {
     aiConfidence: number;
     totalResources: number;
     costOfInaction: number;
-    providerCosts: ProviderCost[];
+    providerCosts: DashboardProviderCost[];
+    mtdSpend?: DashboardMtdSpend;
     isLoading?: boolean;
 }
 
@@ -42,6 +37,33 @@ function formatMoney(value: number): string {
         minimumFractionDigits: 0,
         maximumFractionDigits: 0,
     });
+}
+
+function formatMtdMoney(value: number | null): string {
+    return value === null ? "MTD unavailable" : formatMoney(value);
+}
+
+function billingTimestamp(value: string): string | null {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toLocaleString("en-IN", { timeZone: "UTC" }) + " UTC";
+}
+
+export function BillingFreshness({ billing }: { billing?: DashboardMtdSpend }) {
+    const status = billing?.status ?? "unavailable";
+    const label = billing?.completeness === "partial"
+        ? "Partial billing"
+        : status === "known" ? "Freshness unknown" : `Billing ${status}`;
+    const observedAt = billing?.observed_at ? billingTimestamp(billing.observed_at) : null;
+    const retryAt = billing?.retry_at ? billingTimestamp(billing.retry_at) : null;
+    const asOf = billing?.as_of ? billingTimestamp(billing.as_of) : null;
+    return (
+        <div className="mt-1 space-y-1 break-words text-[10px] text-slate-400" role="status">
+            <span className={status === "fresh" ? "text-emerald-400" : "text-amber-400"}>{label}</span>
+            {observedAt && <p>Observed {observedAt}</p>}
+            {retryAt && <p>Retry after {retryAt}</p>}
+            {asOf && <p>As of {asOf}</p>}
+        </div>
+    );
 }
 
 function getMaturityStage(score: number) {
@@ -93,7 +115,7 @@ function ProviderDonut({
         .map((item) => ({ ...item, pct: total > 0 ? item.value / total : 0 }));
 
     if (rawSegments.length === 0) {
-        const label = data.length > 0 ? "No MTD billing yet" : "No provider data";
+        const label = data.length > 0 ? "No spend this month" : "No provider data";
         return (
             <div className="flex h-32 flex-col items-center justify-center">
                 <p className="text-xs text-slate-500">{label}</p>
@@ -188,6 +210,7 @@ export function CostScoreSection({
     totalResources,
     costOfInaction,
     providerCosts,
+    mtdSpend,
     isLoading = false,
     activeProvider = "all",
 }: CostScoreProps & { activeProvider?: "all" | "aws" | "azure" | "gcp" }) {
@@ -195,7 +218,8 @@ export function CostScoreSection({
         (providerCost) =>
             providerCost.spend > 0 ||
             providerCost.savings > 0 ||
-            providerCost.resources > 0
+            providerCost.resources > 0 ||
+            providerCost.billing !== undefined
     );
     const activeProviderStats =
         activeProvider === "all"
@@ -210,14 +234,18 @@ export function CostScoreSection({
                   (providerCost) => getProviderKey(providerCost.provider) === activeProvider
               );
     const displayedSpend = activeProviderStats?.spend ?? totalSpend;
+    const displayedBilling = activeProvider === "all" ? mtdSpend : activeProviderStats?.billing;
+    const displayedMtd = displayedBilling?.completeness === "complete"
+        ? displayedBilling.amount
+        : null;
     const displayedPotentialSavings = activeProviderStats?.savings ?? potentialSavings;
     const displayedAnnualSavings = activeProviderStats
         ? activeProviderStats.savings * 12
         : annualSavings;
     const monitoredResources = activeProviderStats?.resources ?? totalResources;
-    const donutData = visibleProviderCosts.map((providerCost) => ({
+    const donutData = visibleProviderCosts.filter((providerCost) => providerCost.current != null).map((providerCost) => ({
         name: providerCost.provider.toUpperCase(),
-        value: providerCost.spend,
+        value: providerCost.current ?? 0,
         color: PROVIDER_COLORS[providerCost.provider.toLowerCase()] ?? "#94a3b8",
     }));
 
@@ -480,18 +508,21 @@ export function CostScoreSection({
                         ) : (
                             <div className="flex h-full flex-col justify-between gap-4">
                                 <div className="flex flex-col items-center gap-4">
-                                    <ProviderDonut
+                                    {displayedMtd === null ? (
+                                        <div className="flex h-32 items-center text-xs text-slate-400">MTD unavailable</div>
+                                    ) : <ProviderDonut
                                         data={donutData}
-                                        total={displayedSpend}
-                                    />
+                                        total={displayedMtd}
+                                    />}
                                     <div className="flex w-full min-w-0 flex-col gap-3">
                                         <div>
                                             <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
                                                 MTD Spend
                                             </p>
-                                            <p className="mt-1 truncate text-2xl font-bold text-white">
-                                                {formatMoney(displayedSpend)}
+                                            <p className="mt-1 break-words text-2xl font-bold text-white">
+                                                {formatMtdMoney(displayedMtd)}
                                             </p>
+                                            <BillingFreshness billing={displayedBilling} />
                                             <p className="mt-0.5 text-xs text-slate-500">
                                                 {visibleProviderCosts.length} provider
                                                 {visibleProviderCosts.length !== 1 ? "s" : ""} connected
@@ -506,16 +537,16 @@ export function CostScoreSection({
                                                         key as keyof typeof PROVIDER_COLORS
                                                     ] ?? "#94a3b8";
                                                 const percent =
-                                                    displayedSpend > 0
+                                                    displayedMtd !== null && displayedMtd > 0 && providerCost.current != null
                                                         ? Math.round(
-                                                              (providerCost.spend / displayedSpend) * 100
+                                                              (providerCost.current / displayedMtd) * 100
                                                           )
-                                                        : 0;
+                                                        : null;
 
                                                 return (
                                                     <div
                                                         key={key}
-                                                        className="flex items-center justify-between gap-2"
+                                                        className="flex flex-wrap items-start justify-between gap-2"
                                                     >
                                                         <div className="flex min-w-0 items-center gap-1.5">
                                                             <span
@@ -526,13 +557,14 @@ export function CostScoreSection({
                                                                 {providerCost.provider.toUpperCase()}
                                                             </span>
                                                         </div>
-                                                        <div className="flex shrink-0 items-center gap-2">
-                                                            <span className="text-xs font-mono text-white">
-                                                                {formatMoney(providerCost.spend)}
-                                                            </span>
-                                                            <span className="text-[10px] text-slate-500">
-                                                                {percent}%
-                                                            </span>
+                                                        <div className="min-w-0 text-right">
+                                                            <div className="flex flex-wrap justify-end gap-2">
+                                                                <span className="text-xs font-mono text-white">
+                                                                    {formatMtdMoney(providerCost.current ?? null)}
+                                                                </span>
+                                                                {percent !== null && <span className="text-[10px] text-slate-500">{percent}%</span>}
+                                                            </div>
+                                                            <BillingFreshness billing={providerCost.billing} />
                                                         </div>
                                                     </div>
                                                 );
@@ -546,8 +578,8 @@ export function CostScoreSection({
                                         <p className="text-[10px] uppercase tracking-wide text-slate-500">
                                             MTD Actual
                                         </p>
-                                        <p className="mt-1 truncate text-sm font-bold text-white">
-                                            {formatMoney(displayedSpend)}
+                                        <p className="mt-1 break-words text-sm font-bold text-white">
+                                            {formatMtdMoney(displayedMtd)}
                                         </p>
                                         <p className="mt-0.5 text-[10px] text-slate-600">
                                             month to date
@@ -586,8 +618,9 @@ export function CostScoreSection({
                         ) : (
                             <>
                                 <p className="text-2xl font-bold text-white">
-                                    {formatMoney(displayedSpend)}
+                                    {formatMtdMoney(displayedMtd)}
                                 </p>
+                                <BillingFreshness billing={displayedBilling} />
                                 <p className="mt-1 text-xs text-slate-500">
                                     current calendar month to date
                                 </p>

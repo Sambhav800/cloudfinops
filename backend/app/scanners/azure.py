@@ -13,7 +13,7 @@ Version: 2.0.0
 """
 
 import json
-import time
+import math
 import os
 import logging
 import urllib.error
@@ -27,7 +27,6 @@ from azure.mgmt.network import NetworkManagementClient
 from azure.mgmt.monitor import MonitorManagementClient
 from azure.mgmt.resource.resources import ResourceManagementClient
 from azure.mgmt.storage import StorageManagementClient
-from azure.core.exceptions import HttpResponseError
 
 from ..core.retry import call_with_backoff, is_azure_retryable
 from ..core.carbon_model import estimate_monthly_carbon_kg, estimate_storage_carbon_kg
@@ -170,16 +169,6 @@ class AzureWasteScanner:
             is_retryable=is_azure_retryable,
             base_delay=base_delay,
             max_delay=max_delay,
-        )
-
-    def _azure_cost_call(self, operation_name: str, func):
-        """Cost Management API has strict rate limits (~30 req/5 min). Fail fast on 429."""
-        return call_with_backoff(
-            operation_name, func,
-            is_retryable=is_azure_retryable,
-            max_attempts=2,
-            base_delay=30.0,
-            max_delay=60.0,
         )
 
     def _azure_list(self, operation_name: str, func) -> list[Any]:
@@ -528,7 +517,7 @@ class AzureWasteScanner:
         # Try real cost first
         if hasattr(self, '_real_costs') and resource_id:
             real = self._real_costs.get(resource_id.lower())
-            if real and (real.get("actual_cost_mtd", 0) or real.get("actual_cost_30d", 0)) > 0:
+            if real and ("actual_cost_mtd" in real or "actual_cost_30d" in real):
                 actual = real.get("actual_cost_mtd", real.get("actual_cost_30d", 0))
                 return round(actual, 2), True
         
@@ -538,7 +527,7 @@ class AzureWasteScanner:
         """Return exact current-month resource cost from Azure Cost Management when present."""
         if hasattr(self, '_real_costs') and resource_id:
             real = self._real_costs.get(resource_id.lower())
-            if real and (real.get("actual_cost_mtd", 0) or real.get("actual_cost_30d", 0)) > 0:
+            if real and ("actual_cost_mtd" in real or "actual_cost_30d" in real):
                 actual = real.get("actual_cost_mtd", real.get("actual_cost_30d", 0))
                 return round(float(actual), 2), True
         return 0.0, False
@@ -567,345 +556,34 @@ class AzureWasteScanner:
         proportion = hours_running / 730.0 if hours_running < 730 else 1.0
         return round(monthly_kg * proportion, 3)
     
+    def _billing_to_usd(self, amount: float, currency: str) -> float:
+        """Keep daily billing precision and refuse unknown currency conversion."""
+        if currency == "USD":
+            return amount
+        rate = self._exchange_rates.get(currency)
+        if rate is None or not math.isfinite(float(rate)) or float(rate) <= 0:
+            raise ValueError("Billing exchange rate is unavailable")
+        return amount * float(rate)
+
+    def fetch_billing(self) -> Dict[str, Any]:
+        """Fetch one bounded billing snapshot independently from inventory."""
+        from .azure_billing import AzureBillingReader
+
+        return AzureBillingReader(
+            self.credential, self.subscription_id, self._billing_to_usd,
+        ).fetch()
+
     def _fetch_real_costs(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Fetch actual cost data from Azure Cost Management API.
-        
-        Returns a map of lowercase resource_id -> cost info.
-        Returns empty dict if Cost Management API is unavailable
-        (user hasn't granted Cost Management Reader role, or SDK
-        not installed, or any other failure).
-        
-        This method NEVER raises exceptions — it always returns
-        a dict (possibly empty) so the scanner can keep running while
-        marking per-resource pricing unavailable where Azure does not
-        return exact billing data.
-        
-        Returns:
-            Dict mapping lowercase resource_id -> {
-                "actual_cost_mtd": float,
-                "daily_costs": list of {"date": str, "amount": float},
-                "currency": str
-            }
-        """
-        try:
-            from azure.mgmt.costmanagement import CostManagementClient
-        except ImportError:
-            logger.warning(
-                "azure-mgmt-costmanagement not installed. "
-                "Exact Azure resource costs unavailable. Install with: "
-                "pip install azure-mgmt-costmanagement"
-            )
-            return {}
-        
-        try:
-            cost_client = CostManagementClient(
-                credential=self.credential,
-                subscription_id=self.subscription_id
-            )
+        """Compatibility entry point; reuse a single snapshot on this scanner."""
+        if not hasattr(self, "_billing_snapshot"):
+            self._billing_snapshot = self.fetch_billing()
+        return self._billing_snapshot["resource_costs"]
 
-            end_date = datetime.now(timezone.utc)
-            start_date = end_date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-            scope = f"/subscriptions/{self.subscription_id}"
-
-            from azure.mgmt.costmanagement.models import (
-                QueryDefinition,
-                QueryTimePeriod,
-                QueryDataset,
-                QueryAggregation,
-                QueryGrouping,
-            )
-
-            # Query 1: Cost per resource (current month-to-date total)
-            resource_query = QueryDefinition(
-                type="ActualCost",
-                timeframe="Custom",
-                time_period=QueryTimePeriod(
-                    from_property=start_date,
-                    to=end_date,
-                ),
-                dataset=QueryDataset(
-                    granularity="None",
-                    aggregation={
-                        "totalCost": QueryAggregation(name="Cost", function="Sum"),
-                    },
-                    grouping=[
-                        QueryGrouping(type="Dimension", name="ResourceId"),
-                    ],
-                ),
-            )
-
-            result = self._azure_cost_call(
-                "Azure Cost Management resource usage query",
-                lambda: cost_client.query.usage(
-                    scope=scope,
-                    parameters=resource_query
-                ),
-            )
-            
-            cost_map: Dict[str, Dict[str, Any]] = {}
-            
-            if result.rows:
-                for row in result.rows:
-                    cost = float(row[0])
-                    resource_id = str(row[1]).lower()
-                    currency = str(row[2]) if len(row) > 2 else "USD"
-                    
-                    cost_usd = self._to_usd(cost, currency)
-                    cost_map[resource_id] = {
-                        "actual_cost_mtd": cost_usd,
-                        "actual_cost_30d": cost_usd,  # Backward-compatible key; value is MTD.
-                        "daily_costs": [],
-                        "currency": "USD",
-                        "original_currency": currency,
-                        "original_amount": round(cost, 2),
-                        "period": "current_month_to_date",
-                        "period_start": start_date.date().isoformat(),
-                        "period_end": end_date.date().isoformat(),
-                    }
-            
-            # ── Query 2: Daily breakdown for trending ──
-            daily_query = QueryDefinition(
-                type="ActualCost",
-                timeframe="Custom",
-                time_period=QueryTimePeriod(
-                    from_property=start_date,
-                    to=end_date,
-                ),
-                dataset=QueryDataset(
-                    granularity="Daily",
-                    aggregation={
-                        "totalCost": QueryAggregation(name="Cost", function="Sum"),
-                    },
-                    grouping=[
-                        QueryGrouping(type="Dimension", name="ResourceId"),
-                    ],
-                ),
-            )
-
-            try:
-                daily_result = self._azure_cost_call(
-                    "Azure Cost Management daily resource usage query",
-                    lambda: cost_client.query.usage(
-                        scope=scope,
-                        parameters=daily_query
-                    ),
-                )
-                
-                if daily_result.rows:
-                    for row in daily_result.rows:
-                        cost = float(row[0])
-                        date_val = str(row[1])
-                        resource_id = str(row[2]).lower()
-                        currency = str(row[3]) if len(row) > 3 else cost_map.get(resource_id, {}).get("original_currency", "USD")
-                        
-                        # Format date: API returns YYYYMMDD or int
-                        if len(date_val) == 8:
-                            formatted_date = (
-                                f"{date_val[:4]}-{date_val[4:6]}-"
-                                f"{date_val[6:]}"
-                            )
-                        else:
-                            formatted_date = date_val
-                        
-                        if resource_id in cost_map:
-                            cost_map[resource_id]["daily_costs"].append({
-                                "date": formatted_date,
-                                "amount": round(self._to_usd(cost, currency), 4)
-                            })
-            except Exception as e:
-                logger.debug(
-                    f"Daily cost breakdown failed (non-critical): {e}"
-                )
-            
-            logger.info(
-                f"Fetched real costs for {len(cost_map)} resources "
-                f"from Azure Cost Management"
-            )
-            return cost_map
-            
-        except HttpResponseError as e:
-            error_str = str(e)
-            if "429" in error_str or "Too many requests" in error_str:
-                self._cost_rate_limited = True
-                logger.warning("Azure Cost Management rate-limited (429). Exact resource costs unavailable.")
-            elif "AuthorizationFailed" in error_str or "403" in error_str:
-                logger.warning(
-                    "Cost Management Reader role not granted. "
-                    "Exact Azure resource costs unavailable."
-                )
-            else:
-                logger.warning(
-                    f"Azure Cost Management API error: {e}. "
-                    f"Exact Azure resource costs unavailable."
-                )
-            return {}
-        except Exception as e:
-            error_str = str(e)
-            if "429" in error_str or "Too many requests" in error_str:
-                self._cost_rate_limited = True
-            logger.warning(
-                f"Could not fetch real costs (falling back to "
-                f"billing-unavailable resource costs): {e}"
-            )
-            return {}
-    
     def _fetch_subscription_cost_by_service(self) -> Dict[str, Any]:
-        """
-        Fetch total subscription cost grouped by service name.
-        Used for the service breakdown pie chart on dashboard.
-        
-        Returns:
-            Dict with:
-                "total": float (current month-to-date cost),
-                "by_service": {"Virtual Machines": 123.45, ...},
-                "daily_totals": [{"date": "2025-01-20", "amount": 12.34}],
-                "currency": str
-            Or empty dict on failure.
-        """
-        try:
-            from azure.mgmt.costmanagement import CostManagementClient
-        except ImportError:
-            return {}
-        
-        try:
-            cost_client = CostManagementClient(
-                credential=self.credential,
-                subscription_id=self.subscription_id
-            )
-            
-            end_date = datetime.now(timezone.utc)
-            start_date = end_date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-            scope = f"/subscriptions/{self.subscription_id}"
-
-            from azure.mgmt.costmanagement.models import (
-                QueryDefinition,
-                QueryTimePeriod,
-                QueryDataset,
-                QueryAggregation,
-                QueryGrouping,
-            )
-
-            # Service breakdown (current month-to-date)
-            service_query = QueryDefinition(
-                type="ActualCost",
-                timeframe="Custom",
-                time_period=QueryTimePeriod(
-                    from_property=start_date,
-                    to=end_date,
-                ),
-                dataset=QueryDataset(
-                    granularity="None",
-                    aggregation={
-                        "totalCost": QueryAggregation(name="Cost", function="Sum"),
-                    },
-                    grouping=[
-                        QueryGrouping(type="Dimension", name="ServiceName"),
-                    ],
-                ),
-            )
-
-            result = self._azure_cost_call(
-                "Azure Cost Management service usage query",
-                lambda: cost_client.query.usage(
-                    scope=scope,
-                    parameters=service_query
-                ),
-            )
-
-            by_service: Dict[str, float] = {}
-            total = 0.0
-            billing_currency = "USD"
-
-            if result.rows:
-                for row in result.rows:
-                    cost_raw = float(row[0])
-                    service = str(row[1])
-                    row_currency = str(row[2]) if len(row) > 2 else billing_currency
-                    billing_currency = row_currency or billing_currency
-                    cost_usd = self._to_usd(cost_raw, billing_currency)
-                    by_service[service] = cost_usd
-                    total += cost_usd
-            if billing_currency != "USD":
-                logger.info(
-                    f"Converted subscription costs from "
-                    f"{billing_currency} to USD (rate: "
-                    f"{self.CURRENCY_TO_USD.get(billing_currency, 1.0)})"
-                )
-
-            # Daily totals for trend chart
-            daily_totals: List[Dict[str, Any]] = []
-            try:
-                daily_query = QueryDefinition(
-                    type="ActualCost",
-                    timeframe="Custom",
-                    time_period=QueryTimePeriod(
-                        from_property=start_date,
-                        to=end_date,
-                    ),
-                    dataset=QueryDataset(
-                        granularity="Daily",
-                        aggregation={
-                            "totalCost": QueryAggregation(name="Cost", function="Sum"),
-                        },
-                    ),
-                )
-
-                daily_result = self._azure_cost_call(
-                    "Azure Cost Management daily subscription totals query",
-                    lambda: cost_client.query.usage(
-                        scope=scope,
-                        parameters=daily_query
-                    ),
-                )
-                
-                if daily_result.rows:
-                    for row in daily_result.rows:
-                        cost_raw = float(row[0])
-                        date_val = str(row[1])
-                        row_currency = str(row[2]) if len(row) > 2 else billing_currency
-                        cost_usd = self._to_usd(
-                            cost_raw, row_currency
-                        )
-                        
-                        if len(date_val) == 8:
-                            formatted_date = (
-                                f"{date_val[:4]}-{date_val[4:6]}-"
-                                f"{date_val[6:]}"
-                            )
-                        else:
-                            formatted_date = date_val
-                        
-                        daily_totals.append({
-                            "date": formatted_date,
-                            "amount": round(cost_usd, 4)
-                        })
-            except Exception as e:
-                logger.debug(f"Daily totals fetch failed: {e}")
-            
-            logger.info(
-                f"Total subscription cost (MTD, USD-normalized): "
-                f"${total:.2f} across {len(by_service)} services"
-            )
-            
-            return {
-                "total": round(total, 2),
-                "by_service": by_service,
-                "daily_totals": daily_totals,
-                "currency": "USD",
-                "original_currency": billing_currency,
-                "period": "current_month_to_date",
-                "period_start": start_date.date().isoformat(),
-                "period_end": end_date.date().isoformat(),
-            }
-            
-        except Exception as e:
-            logger.warning(
-                f"Could not fetch subscription cost breakdown: {e}"
-            )
-            return {}
+        """Compatibility entry point sharing the same billing snapshot."""
+        if not hasattr(self, "_billing_snapshot"):
+            self._billing_snapshot = self.fetch_billing()
+        return self._billing_snapshot["subscription_costs"]
 
     def _create_finding(
         self,
@@ -974,7 +652,7 @@ class AzureWasteScanner:
                 continue
 
             actual = float(real.get("actual_cost_mtd", real.get("actual_cost_30d", 0)) or 0)
-            if actual <= 0:
+            if not math.isfinite(actual):
                 continue
 
             current = float(finding.get("cost", 0) or 0)
@@ -2278,7 +1956,7 @@ class AzureWasteScanner:
         except Exception as e:
             logger.error(f"Failed to scan snapshots: {e}")
 
-    def scan_all(self) -> List[Dict[str, Any]]:
+    def scan_all(self, billing_snapshot: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
         Execute all scan modules and return consolidated findings.
         
@@ -2293,22 +1971,10 @@ class AzureWasteScanner:
         # Reset findings
         self.findings = []
         
-        # Fetch real cost data from Azure Cost Management.
-        # Rate limit: ~30 req/5 min. If resource costs 429, skip subscription
-        # costs entirely to avoid burning the rate limit budget further.
-        logger.info("Fetching cost data from Azure Cost Management...")
-        self._cost_rate_limited = False
-        self._real_costs = self._fetch_real_costs()
-        if self._cost_rate_limited:
-            logger.warning(
-                "Azure Cost Management rate-limited — skipping subscription cost query. "
-                "Wait 15-30 min before rescanning to let the rate limit reset."
-            )
-            self._subscription_costs = {}
-        else:
-            if self._real_costs:
-                time.sleep(5)
-            self._subscription_costs = self._fetch_subscription_cost_by_service()
+        self._billing_snapshot = billing_snapshot if billing_snapshot is not None else self.fetch_billing()
+        self._real_costs = self._billing_snapshot.get("resource_costs", {})
+        self._subscription_costs = self._billing_snapshot.get("subscription_costs", {})
+        billing = self._billing_snapshot.get("billing", {})
         
         if self._real_costs:
             logger.info(
@@ -2344,6 +2010,16 @@ class AzureWasteScanner:
                 # Continue to next module
 
         real_cost_backfills = self._apply_real_cost_overrides()
+        for finding in self.findings:
+            metadata = finding.setdefault("metadata", {})
+            real = self._real_costs.get(str(finding.get("cloud_resource_id") or "").lower())
+            metadata["billing"] = dict(billing)
+            if real is not None:
+                metadata["cost_observed_at"] = real.get("observed_at") or billing.get("observed_at")
+                metadata["cost_period_start"] = real.get("period_start") or billing.get("period_start")
+                metadata["daily_costs"] = real.get("daily_costs", [])
+                if billing.get("status") == "stale":
+                    metadata["cost_source"] = "billing_stale"
         if real_cost_backfills:
             logger.info(
                 f"Applied {real_cost_backfills} Azure real-cost overrides from Cost Management data"
@@ -2383,6 +2059,8 @@ class AzureWasteScanner:
             "fleet_utilization_pct": fleet_utilization,
             "potential_savings": total_savings,
             "total_carbon_kg": total_carbon,
+            "billing": billing,
+            "resource_costs": self._real_costs,
             "subscription_costs": self._subscription_costs if hasattr(
                 self, '_subscription_costs'
             ) else {},

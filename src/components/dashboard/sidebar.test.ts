@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 const sidebarSource = readFileSync(new URL("./sidebar.tsx", import.meta.url), "utf8");
 const securityPageSource = readFileSync(new URL("../../app/dashboard/security/page.tsx", import.meta.url), "utf8");
+const alertsPageSource = readFileSync(new URL("../../app/dashboard/alerts/page.tsx", import.meta.url), "utf8");
 
-test("sidebar defines the requested grouped section labels and preserves existing dashboard routes", () => {
+test("sidebar preserves grouped navigation and links to current dashboard destinations", () => {
     for (const sectionName of ["Discover", "Govern", "Secure", "Intelligence"]) {
         assert.ok(sidebarSource.includes(`name: "${sectionName}"`));
     }
@@ -16,8 +17,10 @@ test("sidebar defines the requested grouped section labels and preserves existin
         "/dashboard/totalbill",
         "/dashboard/multicloud",
         "/dashboard/pending-actions",
+        "/dashboard/exclusions",
         "/dashboard/forecast",
         "/dashboard/commitments",
+        "/dashboard/discount-manager",
         "/dashboard/reports",
         "/dashboard/governance",
         "/dashboard/security",
@@ -25,12 +28,33 @@ test("sidebar defines the requested grouped section labels and preserves existin
         "/dashboard/architecture",
         "/dashboard/arbitrage",
         "/dashboard/simulator",
-        "/dashboard/alerts",
         "/dashboard/gpu",
+        "/dashboard/apis",
         "/dashboard/settings",
     ]) {
-        assert.ok(sidebarSource.includes(`"${href}"`));
+        assert.ok(sidebarSource.includes(`href: "${href}"`), `Missing navigation destination: ${href}`);
+        assert.ok(existsSync(new URL(`../../app${href}/page.tsx`, import.meta.url)), `Missing page: ${href}`);
     }
+    assert.ok(sidebarSource.includes("navigationSections.map((section, index) =>"));
+    assert.ok(sidebarSource.includes("section.items.map((item) =>"));
+    assert.ok(sidebarSource.includes("href={href}"));
+});
+
+test("legacy alerts route preserves access through the recommendations destination", () => {
+    assert.ok(alertsPageSource.includes('import { redirect } from "next/navigation";'));
+    assert.ok(alertsPageSource.includes('redirect("/dashboard/pending-actions");'));
+    assert.ok(sidebarSource.includes('name: "Recommendations"'));
+    assert.ok(sidebarSource.includes('href: "/dashboard/pending-actions"'));
+});
+
+test("sidebar retains workspace settings and Clerk sign-out controls", () => {
+    assert.ok(sidebarSource.includes('key: "settings", name: "Settings", href: "/dashboard/settings"'));
+    assert.ok(sidebarSource.includes("bottomNavigation.map((item) =>"));
+    assert.ok(sidebarSource.includes("href={item.href}"));
+    assert.ok(sidebarSource.includes('import { useClerk } from "@clerk/nextjs";'));
+    assert.ok(sidebarSource.includes("const { signOut } = useClerk();"));
+    assert.ok(sidebarSource.includes('onClick={() => signOut({ redirectUrl: "/" })}'));
+    assert.ok(sidebarSource.includes('aria-label="Sign Out"'));
 });
 
 test("sidebar bill scanner uses durable feature plus persisted-analysis state instead of session-only storage", () => {

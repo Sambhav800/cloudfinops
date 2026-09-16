@@ -1,5 +1,7 @@
 from datetime import date
 
+import pytest
+
 from app.core.finance import (
     aggregate_daily_spend_rows,
     build_account_forecast_drivers,
@@ -16,19 +18,19 @@ def test_aggregate_daily_spend_rows_merges_same_day_amounts_and_breakdowns():
             {
                 "spend_date": "2026-03-10",
                 "amount": 12.5,
-                "currency": "USD",
+                "currency": "INR",
                 "service_breakdown": {"EC2": 10, "S3": 2.5},
             },
             {
                 "spend_date": "2026-03-10T05:00:00Z",
                 "amount": "7.5",
-                "currency": "USD",
+                "currency": "INR",
                 "service_breakdown": {"EC2": 3, "Lambda": 4.5},
             },
             {
                 "spend_date": "2026-03-11",
                 "amount": 5,
-                "currency": "USD",
+                "currency": "INR",
                 "service_breakdown": {"CloudSQL": 5},
             },
         ]
@@ -38,13 +40,13 @@ def test_aggregate_daily_spend_rows_merges_same_day_amounts_and_breakdowns():
         {
             "spend_date": "2026-03-10",
             "amount": 20.0,
-            "currency": "USD",
+            "currency": "INR",
             "service_breakdown": {"EC2": 13.0, "S3": 2.5, "Lambda": 4.5},
         },
         {
             "spend_date": "2026-03-11",
             "amount": 5.0,
-            "currency": "USD",
+            "currency": "INR",
             "service_breakdown": {"CloudSQL": 5.0},
         },
     ]
@@ -52,12 +54,12 @@ def test_aggregate_daily_spend_rows_merges_same_day_amounts_and_breakdowns():
 
 def test_build_forecast_summary_flags_forecasted_over_budget():
     history_rows = [
-        {"spend_date": "2026-03-01", "amount": 20, "currency": "USD"},
-        {"spend_date": "2026-03-02", "amount": 21, "currency": "USD"},
-        {"spend_date": "2026-03-03", "amount": 22, "currency": "USD"},
-        {"spend_date": "2026-03-04", "amount": 23, "currency": "USD"},
-        {"spend_date": "2026-03-05", "amount": 24, "currency": "USD"},
-        {"spend_date": "2026-03-06", "amount": 25, "currency": "USD"},
+        {"spend_date": "2026-03-01", "amount": 20, "currency": "INR"},
+        {"spend_date": "2026-03-02", "amount": 21, "currency": "INR"},
+        {"spend_date": "2026-03-03", "amount": 22, "currency": "INR"},
+        {"spend_date": "2026-03-04", "amount": 23, "currency": "INR"},
+        {"spend_date": "2026-03-05", "amount": 24, "currency": "INR"},
+        {"spend_date": "2026-03-06", "amount": 25, "currency": "INR"},
     ]
 
     summary = build_forecast_summary(
@@ -69,6 +71,7 @@ def test_build_forecast_summary_flags_forecasted_over_budget():
     )
 
     assert summary["status"] == "forecasted_over_budget"
+    assert summary["currency"] == "INR"
     assert summary["budget_source"] == "portfolio_sum"
     assert summary["actual_mtd_spend"] == 135.0
     assert summary["forecast_eom_spend"] > 400.0
@@ -76,13 +79,62 @@ def test_build_forecast_summary_flags_forecasted_over_budget():
     assert summary["message"] == "Forecasted month-end spend is above the configured budget."
 
 
+def test_mixed_usd_and_inr_history_converts_once_and_preserves_service_totals(monkeypatch):
+    monkeypatch.setattr("app.core.finance.DEFAULT_USD_TO_INR_RATE", 80.0)
+    rows = [
+        {"spend_date": "2026-03-10", "amount": 2, "currency": "USD", "service_breakdown": {"EC2": 2}},
+        {"spend_date": "2026-03-10", "amount": 40, "currency": "INR", "service_breakdown": {"S3": 40}},
+    ]
+    expected = [{
+        "spend_date": "2026-03-10", "amount": 200.0, "currency": "INR",
+        "service_breakdown": {"EC2": 160.0, "S3": 40.0},
+    }]
+    assert aggregate_daily_spend_rows(rows) == expected
+    assert aggregate_daily_spend_rows(expected) == expected
+
+
+@pytest.mark.parametrize("rows,expected", [
+    ([], []),
+    ([{"spend_date": "2026-03-10", "amount": 0, "currency": "USD"}], [
+        {"spend_date": "2026-03-10", "amount": 0, "currency": "INR", "service_breakdown": {}},
+    ]),
+])
+def test_history_aggregation_handles_empty_and_zero_without_provisional_spend(rows, expected):
+    assert aggregate_daily_spend_rows(rows) == expected
+
+
+@pytest.mark.parametrize("budget", [None, 0, 1000.0])
+def test_empty_forecast_keeps_the_configured_budget_currency(budget):
+    summary = build_forecast_summary(
+        [], budget_limit=budget, budget_source="portfolio_setting", scope="portfolio", as_of=date(2026, 3, 6),
+    )
+    assert summary["currency"] == "INR"
+    assert summary["status"] == "insufficient_history"
+    assert summary["budget_limit"] == budget
+    assert summary["actual_mtd_spend"] == summary["forecast_eom_spend"] == 0
+    assert summary["history_days_used"] == 0
+
+
+def test_usd_spend_is_compared_to_an_inr_budget_without_converting_the_budget(monkeypatch):
+    monkeypatch.setattr("app.core.finance.DEFAULT_USD_TO_INR_RATE", 80.0)
+    summary = build_forecast_summary(
+        [{"spend_date": f"2026-03-0{day}", "amount": 1, "currency": "USD"} for day in range(1, 7)],
+        budget_limit=1000.0, budget_source="portfolio_setting", scope="portfolio", as_of=date(2026, 3, 6),
+    )
+    assert summary["currency"] == "INR"
+    assert summary["actual_mtd_spend"] == 480.0
+    assert summary["forecast_eom_spend"] == 2480.0
+    assert summary["budget_limit"] == 1000.0
+    assert summary["status"] == "forecasted_over_budget"
+
+
 def test_build_forecast_summary_returns_insufficient_history_for_short_series():
     summary = build_forecast_summary(
         [
-            {"spend_date": "2026-03-01", "amount": 15, "currency": "USD"},
-            {"spend_date": "2026-03-02", "amount": 16, "currency": "USD"},
-            {"spend_date": "2026-03-03", "amount": 17, "currency": "USD"},
-            {"spend_date": "2026-03-04", "amount": 18, "currency": "USD"},
+            {"spend_date": "2026-03-01", "amount": 15, "currency": "INR"},
+            {"spend_date": "2026-03-02", "amount": 16, "currency": "INR"},
+            {"spend_date": "2026-03-03", "amount": 17, "currency": "INR"},
+            {"spend_date": "2026-03-04", "amount": 18, "currency": "INR"},
         ],
         budget_limit=200.0,
         budget_source="integration",
@@ -99,11 +151,11 @@ def test_build_forecast_summary_returns_insufficient_history_for_short_series():
 
 def test_build_forecast_summary_uses_custom_warning_threshold():
     history_rows = [
-        {"spend_date": "2026-03-01", "amount": 10, "currency": "USD"},
-        {"spend_date": "2026-03-02", "amount": 10, "currency": "USD"},
-        {"spend_date": "2026-03-03", "amount": 10, "currency": "USD"},
-        {"spend_date": "2026-03-04", "amount": 10, "currency": "USD"},
-        {"spend_date": "2026-03-05", "amount": 10, "currency": "USD"},
+        {"spend_date": "2026-03-01", "amount": 10, "currency": "INR"},
+        {"spend_date": "2026-03-02", "amount": 10, "currency": "INR"},
+        {"spend_date": "2026-03-03", "amount": 10, "currency": "INR"},
+        {"spend_date": "2026-03-04", "amount": 10, "currency": "INR"},
+        {"spend_date": "2026-03-05", "amount": 10, "currency": "INR"},
     ]
 
     summary = build_forecast_summary(

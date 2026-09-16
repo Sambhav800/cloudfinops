@@ -4,6 +4,7 @@ Handles scan triggers, resource fetching, and AI analysis.
 """
 
 import asyncio
+import math
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, File, UploadFile, Form, Request, Query
@@ -35,6 +36,11 @@ from ..core.cache import cache_response
 from ..core.audit import log_audit_event
 from ..core.finance import aggregate_daily_spend_rows, redact_integration_settings_for_audit
 from ..core.commitment_engine import commitment_engine
+from ..core.commitment_recommendations import (
+    CommitmentRecommendationResult,
+    CommitmentScopeNotFoundError,
+    get_commitment_recommendation_result,
+)
 from ..core.provider_pricing_catalog import pricing_catalog
 from ..core.community_pricing_pool import (
     apply_community_estimates,
@@ -175,12 +181,13 @@ class ResourceResponse(BaseModel):
 
 class StatsResponse(BaseModel):
     """Dashboard statistics response."""
-    total_spend: float
+    total_spend: Optional[float]
     potential_savings: float
     active_resources_count: int
     ai_confidence_score: int
     carbon_footprint_kg: float
     cost_of_inaction_6mo: float
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class IntegrationResponse(BaseModel):
@@ -1264,7 +1271,7 @@ def _scan_resource_cost_source(resource: dict[str, Any]) -> str:
 def _is_dashboard_counted_resource(resource: dict[str, Any]) -> bool:
     """Return whether a scanned inventory row should affect dashboard resource count."""
     cost_source = _scan_resource_cost_source(resource)
-    if cost_source == "actual":
+    if cost_source in {"actual", "billing_stale"}:
         return True
 
     if _scan_resource_cost_amount(resource) > 0:
@@ -1388,7 +1395,7 @@ def _build_optimization_scan_stats(
     }
 
 
-def _build_deterministic_governance(resources: list[dict[str, Any]], total_spend: float) -> dict[str, Any]:
+def _build_deterministic_governance(resources: list[dict[str, Any]], total_spend: float | None) -> dict[str, Any]:
     """Build governance data from actual scanner findings — no AI, no guessing."""
     total = len(resources) or 1
     tag_violations = []
@@ -1585,6 +1592,168 @@ async def _save_scan_daily_spend_history(
             error,
         )
         return False
+
+
+def _azure_billing_available(billing: dict[str, Any], field: str) -> bool:
+    return (
+        billing.get("period_start") == datetime.now(timezone.utc).strftime("%Y-%m-01")
+        and billing.get(field) is True
+    )
+
+
+def _azure_cost_observation(
+    amount: Any, period_start: Any, observed_at: Any, daily_costs: Any = None,
+) -> dict[str, Any] | None:
+    if amount is None or isinstance(amount, bool):
+        return None
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(amount):
+        return None
+    observed = _parse_optional_iso_datetime(observed_at)
+    if observed and observed > datetime.now(timezone.utc):
+        return None
+    return {
+        "amount": amount,
+        "period_start": period_start or (observed.strftime("%Y-%m-01") if observed else None),
+        "observed_at": observed_at if observed else None,
+        "daily_costs": daily_costs if isinstance(daily_costs, list) else [],
+    }
+
+
+def _preserve_azure_resource_billing(
+    findings: list[dict[str, Any]],
+    previous_resources: list[dict[str, Any]],
+    *,
+    user_id: str,
+    integration_id: str,
+    billing: dict[str, Any],
+    resource_costs: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Select the newest current-period evidence; archive older money outside current cost."""
+    previous_by_id = {
+        str(row.get("cloud_resource_id") or "").strip().lower(): row
+        for row in previous_resources
+        if row.get("user_id") == user_id
+        and row.get("integration_id") == integration_id
+        and row.get("cloud_resource_id")
+    }
+    current_period = datetime.now(timezone.utc).strftime("%Y-%m-01")
+    earliest = datetime.min.replace(tzinfo=timezone.utc)
+    available = _azure_billing_available(billing, "resource_costs_available")
+    prepared = []
+    for finding in findings:
+        row = dict(finding)
+        finding_metadata = row.get("metadata") or {}
+        resource_id = str(row.get("cloud_resource_id") or "").strip().lower()
+        source_cost = resource_costs.get(resource_id) or {}
+        candidates: list[dict[str, Any]] = []
+        snapshot_cost = _azure_cost_observation(
+            source_cost.get("actual_cost_mtd", source_cost.get("actual_cost_30d")),
+            source_cost.get("period_start") or (billing.get("period_start") if available else None),
+            source_cost.get("observed_at") or (billing.get("observed_at") if available else None),
+            source_cost.get("daily_costs"),
+        )
+        if snapshot_cost:
+            candidates.append(snapshot_cost)
+        previous = previous_by_id.get(resource_id)
+        for existing in ([previous] if previous else []) + ([row] if not source_cost else []):
+            existing_metadata = existing.get("metadata") or {}
+            if _scan_resource_cost_source(existing) in {"actual", "billing_stale"}:
+                existing_billing = existing_metadata.get("billing") or {}
+                observation = _azure_cost_observation(
+                    existing.get("cost"),
+                    existing_metadata.get("cost_period_start") or existing_billing.get("period_start"),
+                    existing_metadata.get("cost_observed_at") or existing_billing.get("observed_at"),
+                    existing_metadata.get("daily_costs"),
+                )
+                if observation:
+                    candidates.append(observation)
+            last_known = existing_metadata.get("last_known_cost") or {}
+            observation = _azure_cost_observation(
+                last_known.get("amount"), last_known.get("period_start"), last_known.get("observed_at"),
+            )
+            if observation:
+                candidates.append(observation)
+
+        current = [
+            item for item in candidates
+            if item["period_start"] == current_period
+            and (observed := _parse_optional_iso_datetime(item["observed_at"])) is not None
+            and observed.strftime("%Y-%m-01") == current_period
+        ]
+        selected = max(
+            current or candidates,
+            key=lambda item: _parse_optional_iso_datetime(item["observed_at"]) or earliest,
+            default=None,
+        )
+        # Billing amounts, periods and daily rows must all come from the same observation.
+        metadata = {
+            key: value for key, value in finding_metadata.items()
+            if not key.startswith("cost_") and key not in {"daily_costs", "last_known_cost"}
+        }
+        if selected and current:
+            row["cost"] = selected["amount"]
+            metadata.update(
+                cost_source=(
+                    "actual" if selected is snapshot_cost and available and billing.get("status") in {"fresh", "cached"}
+                    else "billing_stale"
+                ),
+                cost_observed_at=selected["observed_at"],
+                cost_period_start=selected["period_start"],
+                daily_costs=selected["daily_costs"],
+            )
+        else:
+            row["cost"] = 0.0
+            metadata.update(
+                cost_source="billing_unavailable", cost_observed_at=None,
+                cost_period_start=current_period, daily_costs=[],
+            )
+            if selected:
+                metadata["last_known_cost"] = {key: selected[key] for key in ("amount", "observed_at", "period_start")}
+        metadata["billing"] = dict(billing)
+        row["metadata"] = metadata
+        prepared.append(row)
+    return prepared
+
+
+async def _upsert_azure_daily_spend_history(
+    *,
+    db: MongoDBClient,
+    user_id: str,
+    integration_id: str,
+    subscription_costs: dict[str, Any],
+    billing: dict[str, Any],
+) -> None:
+    """Update only verified billing days, retaining all other historical rows."""
+    try:
+        if not _azure_billing_available(billing, "daily_costs_available"):
+            return
+        daily_totals = subscription_costs.get("daily_totals") or []
+        services_by_date: dict[str, dict[str, float]] = {}
+        for day in daily_totals:
+            if isinstance(day, dict):
+                spend_date = str(day.get("date") or day.get("spend_date") or "").strip()[:10]
+                services_by_date.setdefault(spend_date, day.get("service_breakdown") or {})
+        rows = [
+            {
+                "user_id": user_id,
+                "integration_id": integration_id,
+                "spend_date": day["date"],
+                "amount": day["amount"],
+                "currency": subscription_costs.get("currency") or "USD",
+                "service_breakdown": services_by_date.get(day["date"]) or {},
+                "metadata": {"billing": dict(billing)},
+            }
+            for day in _normalize_scan_daily_totals(daily_totals)
+        ]
+        for offset in range(0, len(rows), 50):
+            await db.upsert("daily_spend_history", rows[offset:offset + 50])
+    except Exception as error:
+        logger.error("Azure daily history upsert failed for integration %s (%s)", integration_id, type(error).__name__)
+        raise
 
 
 def _build_scan_recommendation_notification(
@@ -1899,7 +2068,7 @@ async def get_resources(
     return ResourceResponse(resources=resources, count=len(resources))
 
 
-@router.get("/stats", response_model=StatsResponse)
+@router.get("/stats", response_model=StatsResponse, response_model_exclude_unset=True)
 async def get_stats(
     integration_id: Optional[str] = None,
     user: ClerkUser = Depends(get_current_user),
@@ -1928,7 +2097,8 @@ async def get_stats(
         active_resources_count=stats.get("active_resources_count", 0),
         ai_confidence_score=stats.get("ai_confidence_score", 0),
         carbon_footprint_kg=stats.get("carbon_footprint_kg", 0),
-        cost_of_inaction_6mo=stats.get("cost_of_inaction_6mo", 0)
+        cost_of_inaction_6mo=stats.get("cost_of_inaction_6mo", 0),
+        **({"metadata": stats["metadata"]} if isinstance(stats.get("metadata"), dict) else {}),
     )
 
 
@@ -2249,6 +2419,7 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
 
             from ..scanners.azure import AzureWasteScanner
             from ..core.exchange_rates import get_exchange_rates
+            from ..core.azure_billing_refresh import refresh_azure_billing
             import asyncio
 
             # Track scan in scan_history
@@ -2263,13 +2434,65 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                     subscription_id=str(credentials.get("subscription_id") or ""),
                     exchange_rates=exchange_rates,
                 )
+                try:
+                    snapshot = await refresh_azure_billing(
+                        scanner,
+                        db=db,
+                        user_id=user_id,
+                        subscription_id=str(credentials.get("subscription_id") or ""),
+                    )
+                except Exception as error:
+                    logger.warning("Azure billing refresh failed (%s); retaining last-known costs", type(error).__name__)
+                    snapshot = {
+                        "resource_costs": {},
+                        "subscription_costs": {},
+                        "billing": {
+                            "status": "unavailable",
+                            "observed_at": None,
+                            "period_start": datetime.now(timezone.utc).strftime("%Y-%m-01"),
+                            "reason": "refresh_failed",
+                            "retry_at": None,
+                            "resource_costs_available": False,
+                            "subscription_costs_available": False,
+                            "daily_costs_available": False,
+                        },
+                    }
+                billing = snapshot["billing"]
+                pending_billing = dict(billing)
+                if any(billing.get(key) for key in (
+                    "resource_costs_available", "subscription_costs_available", "daily_costs_available",
+                )):
+                    pending_billing.update(
+                        status="stale", reason="persistence_pending",
+                        resource_costs_available=False, subscription_costs_available=False, daily_costs_available=False,
+                    )
+                await db.update(
+                    "cloud_integrations", {"metadata.billing": pending_billing},
+                    {"id": integration_id, "user_id": user_id},
+                )
+                if scan_id:
+                    await db.update(
+                        "scan_history",
+                        {"scan_metadata.billing": pending_billing},
+                        {"id": scan_id, "user_id": user_id, "integration_id": integration_id},
+                    )
                 
                 # Run synchronous scanner in thread pool
                 await send_scan_progress(user_id, integration_id, 10, "Scanning Azure resources...")
                 loop = asyncio.get_event_loop()
-                findings = await loop.run_in_executor(None, scanner.scan_all)
+                findings = await loop.run_in_executor(None, lambda: scanner.scan_all(billing_snapshot=snapshot))
                 
                 await send_scan_progress(user_id, integration_id, 50, f"Analyzing {len(findings)} resources...")
+
+                previous_stats = await db.get_dashboard_stats(user_id, integration_id) or {}
+                previous_resources = []
+                if not _azure_billing_available(billing, "resource_costs_available") or billing.get("status") != "fresh":
+                    previous_resources = await db.get_resources(user_id, integration_id)
+                findings = _preserve_azure_resource_billing(
+                    findings, previous_resources,
+                    user_id=user_id, integration_id=integration_id, billing=billing,
+                    resource_costs=snapshot.get("resource_costs") or {},
+                )
                 
                 # Prepare resources for DB with user_id and integration_id
                 db_resources = []
@@ -2291,6 +2514,15 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                         integration_id=integration_id,
                         exclude_batch_id=batch_id,
                     )
+                elif previous_resources:
+                    retained = _preserve_azure_resource_billing(
+                        previous_resources, previous_resources,
+                        user_id=user_id, integration_id=integration_id, billing=billing,
+                        resource_costs=snapshot.get("resource_costs") or {},
+                    )
+                    await db.bulk_upsert_resources(retained, batch_size=50)
+                    inventory_resource_count = len(retained)
+                    dashboard_resource_count = _count_dashboard_resources(retained)
                 
                 # =============================================================
                 # OPTIMIZATION ENGINE — Multi-signal deterministic classification
@@ -2321,15 +2553,16 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                 potential_savings = opt_result.get("potential_savings", 0)
                 ai_confidence = opt_result.get("ai_confidence_score", 0)
 
-                # Use REAL subscription cost if available
-                scan_summary = getattr(scanner, '_scan_summary', {})
-                subscription_costs = scan_summary.get("subscription_costs", {})
-
-                if subscription_costs.get("total", 0) > 0:
-                    total_spend = subscription_costs["total"]
-                    logger.info(f"Using real Azure cost: ${total_spend:.2f}")
-                else:
-                    total_spend = sum(f.get("cost", 0) for f in findings)
+                # Findings only cover attributed resources, never the entire subscription bill.
+                subscription_costs = snapshot.get("subscription_costs") or {}
+                subscription_available = (
+                    _azure_billing_available(billing, "subscription_costs_available")
+                    and subscription_costs.get("total") is not None
+                )
+                total_spend = (
+                    subscription_costs["total"] if subscription_available
+                    else previous_stats.get("total_spend")
+                )
 
                 opt_stats = opt_result.get("stats", {})
                 logger.info(
@@ -2342,10 +2575,15 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                     opt_result.get("ai_review_candidates", 0),
                 )
 
-                await send_scan_progress(user_id, integration_id, 72, "Applying market-price estimates...")
-                await _apply_catalog_estimates_for_scan(db, user_id, integration_id)
-                await _apply_community_estimates_for_scan(db, user_id, integration_id)
-                await _contribute_community_prices_for_scan(db, user_id, db_resources)
+                if (
+                    subscription_available
+                    and _azure_billing_available(billing, "resource_costs_available")
+                    and billing.get("status") in {"fresh", "cached"}
+                ):
+                    await send_scan_progress(user_id, integration_id, 72, "Applying market-price estimates...")
+                    await _apply_catalog_estimates_for_scan(db, user_id, integration_id)
+                    await _apply_community_estimates_for_scan(db, user_id, integration_id)
+                    await _contribute_community_prices_for_scan(db, user_id, db_resources)
 
                 # Carbon estimate from active resource count
                 active_count = sum(
@@ -2356,7 +2594,23 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
 
                 ai_stats = _build_optimization_scan_stats(opt_result, db_resources)
 
+                await send_scan_progress(user_id, integration_id, 73, "Saving spend history...")
+                await _upsert_azure_daily_spend_history(
+                    db=db, user_id=user_id, integration_id=integration_id,
+                    subscription_costs=subscription_costs, billing=billing,
+                )
+
                 # Update dashboard stats
+                previous_stats_metadata = previous_stats.get("metadata") or {}
+                previous_stats_billing = previous_stats_metadata.get("billing") or {}
+                total_spend_observed_at = (
+                    (subscription_costs.get("observed_at") or billing.get("observed_at")) if subscription_available
+                    else previous_stats_metadata.get("total_spend_observed_at", previous_stats_billing.get("observed_at"))
+                )
+                total_spend_period_start = (
+                    billing.get("period_start") if subscription_available
+                    else previous_stats_metadata.get("total_spend_period_start", previous_stats_billing.get("period_start"))
+                )
                 await db.upsert_dashboard_stats({
                     "user_id": user_id,
                     "integration_id": integration_id,
@@ -2365,22 +2619,18 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                     "active_resources_count": dashboard_resource_count,
                     "ai_confidence_score": ai_confidence,
                     "carbon_footprint_kg": carbon_kg,
-                    "cost_of_inaction_6mo": potential_savings * 6
+                    "cost_of_inaction_6mo": potential_savings * 6,
+                    "metadata": {
+                        **previous_stats_metadata,
+                        "billing": billing,
+                        "total_spend_observed_at": total_spend_observed_at,
+                        "total_spend_period_start": total_spend_period_start,
+                        "total_spend_basis": (
+                            "subscription_billing" if subscription_available
+                            else "last_known" if total_spend is not None else "unavailable"
+                        ),
+                    },
                 })
-
-                # Save daily spend history (only if we got real billing data — don't overwrite good data with empty)
-                await send_scan_progress(user_id, integration_id, 73, "Saving spend history...")
-
-                if subscription_costs.get("daily_totals"):
-                    await db.save_daily_spend_history(
-                        user_id=user_id,
-                        integration_id=integration_id,
-                        daily_totals=subscription_costs["daily_totals"],
-                        service_breakdown=subscription_costs.get("by_service", {}),
-                        currency=subscription_costs.get("currency", "USD")
-                    )
-                else:
-                    logger.info("Skipping spend history save — Azure Cost Management returned no data (likely rate-limited)")
 
                 await _replace_scan_waste_distribution(
                     db=db,
@@ -2490,24 +2740,30 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                         logger.warning("Failed to save governance/alerts: %s", e)
                 
                 # Update integration
-                await db.update_integration(
-                    integration_id=integration_id,
-                    user_id=user_id,
-                    data={
+                completed_metadata = {
+                    "billing": billing,
+                    "last_scan_batch_id": batch_id,
+                    "scan_status": "completed",
+                    "scan_error": None,
+                    "resources_found": dashboard_resource_count,
+                    "inventory_assets_found": inventory_resource_count,
+                    "waste_found": len(ai_stats.get("recommendations", [])),
+                    "potential_savings": potential_savings,
+                }
+                if subscription_available:
+                    completed_metadata.update({
+                        "last_month_cost": total_spend,
+                        "last_mtd_cost": total_spend,
+                        "last_mtd_cost_period_start": total_spend_period_start,
+                        "last_mtd_cost_observed_at": total_spend_observed_at,
+                    })
+                await db.update(
+                    "cloud_integrations",
+                    {
                         "last_scan": datetime.now(timezone.utc).isoformat(),
-                        "metadata": {
-                            **integration_metadata,
-                            "last_month_cost": total_spend,
-                            "last_scan_batch_id": batch_id,
-                            "scan_status": "completed",
-                            "scan_error": None,
-                            "last_mtd_cost": total_spend,
-                            "resources_found": dashboard_resource_count,
-                            "inventory_assets_found": inventory_resource_count,
-                            "waste_found": len(ai_stats.get("recommendations", [])),
-                            "potential_savings": potential_savings
-                        }
+                        **{f"metadata.{key}": value for key, value in completed_metadata.items()},
                     },
+                    {"id": integration_id, "user_id": user_id},
                 )
 
                 await _sync_commitments_after_scan(
@@ -2524,6 +2780,7 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                     total_resources=len(findings),
                     waste_found=len(ai_stats.get("recommendations", [])),
                     total_savings=potential_savings,
+                    scan_metadata={"billing": billing},
                     governance_data=governance_data
                 )
                 
@@ -2547,16 +2804,10 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                     await db.fail_scan_history(scan_id, str(e))
                 logger.error("Azure scan failed: %s", e, exc_info=True)
                 await send_scan_progress(user_id, integration_id, 0, f"Error: {str(e)}")
-                await db.update_integration(
-                    integration_id=integration_id,
-                    user_id=user_id,
-                    data={
-                        "metadata": {
-                            **integration_metadata,
-                            "scan_status": "failed",
-                            "scan_error": str(e)
-                        }
-                    },
+                await db.update(
+                    "cloud_integrations",
+                    {"metadata.scan_status": "failed", "metadata.scan_error": str(e)},
+                    {"id": integration_id, "user_id": user_id},
                 )
                 return  # Early return on failure
         elif provider == "gcp":
@@ -2711,7 +2962,6 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                 db=db,
                 gemini_api_key=gemini_key,
             )
-            ai_stats = _build_optimization_compatibility_stats(opt_result)
 
             opt_stats = optimization_result.get("stats", {})
             logger.info(
@@ -4245,102 +4495,28 @@ async def get_api_cost_per_request(
 # Commitment Optimizer
 # ─────────────────────────────────────────────────────────────────────────────
 
-@router.get("/commitment-recommendations")
+@router.get("/commitment-recommendations", response_model=CommitmentRecommendationResult)
 async def get_commitment_recommendations(
-    coverage_target: float = Query(75.0, ge=10.0, le=100.0, description="Target baseline coverage percentage"),
-    max_term: Optional[str] = Query(None, description="Max commitment term: 1_year or 3_year"),
-    payment_option: Optional[str] = Query(None, description="Payment preference: all_upfront, partial_upfront, no_upfront"),
+    request: Request,
+    integration_id: Optional[str] = Query(None),
     user: ClerkUser = Depends(get_current_user),
     db: MongoDBClient = Depends(get_db_client),
-):
-    """
-    Generate purchase recommendations (AWS SP, Azure RI, GCP CUD)
-    from steady-state usage baselines and existing commitments.
-    """
+) -> CommitmentRecommendationResult:
+    """Read validated provider purchase estimates for the authenticated scope."""
+    if any(param in request.query_params for param in ("coverage_target", "max_term", "payment_option")):
+        raise HTTPException(
+            status_code=422,
+            detail="Unsupported customization: coverage_target, max_term, and payment_option cannot configure persisted provider estimates.",
+        )
     try:
-        from dataclasses import asdict
-        from ..core.commitment_optimizer import (
-            analyze_usage_baselines,
-            generate_commitment_recommendations,
-            OptimizerConfig,
-            Term,
-            PaymentOption,
-            UsageBaseline,
+        return await get_commitment_recommendation_result(
+            db=db, user_id=user.id, integration_id=integration_id,
         )
-
-        term_enum = Term.THREE_YEAR if max_term == "3_year" else Term.ONE_YEAR
-        payment_enum = (
-            PaymentOption.ALL_UPFRONT if payment_option == "all_upfront"
-            else PaymentOption.PARTIAL_UPFRONT if payment_option == "partial_upfront"
-            else PaymentOption.NO_UPFRONT
-        )
-
-        config = OptimizerConfig(
-            coverage_target_pct=float(coverage_target),
-            max_term=term_enum,
-            preferred_payment=payment_enum,
-        )
-
-        # 1. Fetch user active integrations
-        active_integrations = await _get_active_integrations(db, user.id)
-        all_baselines: list[UsageBaseline] = []
-
-        if active_integrations:
-            for integration in active_integrations:
-                provider = str(integration.get("provider") or "aws").lower()
-                iid = integration.get("id")
-                resources = await db.get_resources(user.id, iid)
-                daily_spend = await db.get_daily_spend_history(user.id, iid, days=90)
-                baselines = analyze_usage_baselines(resources, daily_spend, provider)
-                all_baselines.extend(baselines)
-
-        # Fallback if no active integrations with baselines: check global user resources and spend
-        if not all_baselines:
-            general_resources = await db.get_resources(user.id)
-            general_spend = await db.get_daily_spend_history(user.id, days=90)
-            if general_resources or general_spend:
-                providers_present = {
-                    str(r.get("provider") or "aws").lower()
-                    for r in general_resources
-                    if str(r.get("provider") or "").strip()
-                } or {"aws"}
-                for p in providers_present:
-                    p_res = [r for r in general_resources if str(r.get("provider") or "aws").lower() == p]
-                    baselines = analyze_usage_baselines(p_res, general_spend, p)
-                    all_baselines.extend(baselines)
-
-        # Adjust min_observation_days if user has sufficient data (>= 7 days) but < 30 days
-        if all_baselines:
-            min_days = min(b.observation_days for b in all_baselines)
-            if min_days < config.min_observation_days and min_days >= 7:
-                config.min_observation_days = min_days
-
-        # 2. Fetch existing commitments to calculate utilization, waste, and expiring alerts
-        existing_commitments: list[dict[str, Any]] = []
-        try:
-            raw_commitments = await commitment_engine.get_commitments(user.id)
-            for c in raw_commitments:
-                if hasattr(c, "model_dump"):
-                    existing_commitments.append(c.model_dump())
-                elif hasattr(c, "dict"):
-                    existing_commitments.append(c.dict())
-                elif isinstance(c, dict):
-                    existing_commitments.append(c)
-        except Exception as comm_err:
-            logger.warning("Failed to retrieve existing commitments for user %s: %s", user.id, comm_err)
-
-        # 3. Generate portfolio recommendations
-        portfolio = generate_commitment_recommendations(
-            baselines=all_baselines,
-            existing_commitments=existing_commitments,
-            config=config,
-        )
-
-        return asdict(portfolio)
-
-    except Exception as e:
-        logger.error("Commitment recommendation generation failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail="Commitment recommendation analysis failed.")
+    except CommitmentScopeNotFoundError as error:
+        raise HTTPException(status_code=404, detail="Integration not found") from error
+    except Exception as error:
+        logger.error("Commitment recommendation read failed (%s)", type(error).__name__)
+        raise HTTPException(status_code=503, detail="Commitment recommendations are temporarily unavailable") from error
 
 
 # ─────────────────────────────────────────────────────────────────────────────

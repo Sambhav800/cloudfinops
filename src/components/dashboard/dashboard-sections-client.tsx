@@ -4,7 +4,7 @@ import type { ComponentProps } from "react";
 import { useState } from "react";
 import Link from "next/link";
 import { ArrowUpRight, Cloud } from "lucide-react";
-import type { getDashboardMetrics } from "@/lib/dashboard/data";
+import type { getDashboardPageData } from "@/lib/dashboard/data";
 import type { FinanceBudgetEvent, FinanceForecastResponse } from "@/lib/api";
 import { DashboardOverview } from "@/components/dashboard/overview";
 import { CostScoreSection } from "@/components/dashboard/cost-score-section";
@@ -14,7 +14,7 @@ import type {
     DashboardFinanceAccountSummary,
 } from "@/components/dashboard/dashboard-finance-summary";
 type DashboardOverviewProps = ComponentProps<typeof DashboardOverview>;
-type DashboardStats = Awaited<ReturnType<typeof getDashboardMetrics>>;
+type DashboardStats = Awaited<ReturnType<typeof getDashboardPageData>>["stats"];
 
 const PROVIDER_COLORS = {
     aws: "#FF9900",
@@ -57,7 +57,8 @@ export function DashboardSectionsClient({
         stats?.providerCosts?.filter((providerCost) =>
             providerCost.spend > 0 ||
             providerCost.resources > 0 ||
-            providerCost.savings > 0
+            providerCost.savings > 0 ||
+            providerCost.billing !== undefined
         ) ?? [];
     const providerCount = Math.max(
         new Set(
@@ -70,7 +71,7 @@ export function DashboardSectionsClient({
     const activeScopeLabel = activeProvider === "all" ? "All providers" : `${activeProvider.toUpperCase()} only`;
     const costTrackedResources = stats?.totalResources ?? resources.length;
 
-    if (!hasConnectedAccounts) {
+    if (!hasConnectedAccounts && stats !== null) {
         return (
             <div className="rounded-2xl border border-white/10 bg-slate-900/50 p-8 shadow-2xl shadow-black/20">
                 <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -194,19 +195,9 @@ export function DashboardSectionsClient({
             </div>
 
             {stats === null ? (
-                <>
-                    <CostScoreSection
-                        totalSpend={0}
-                        potentialSavings={0}
-                        annualSavings={0}
-                        aiConfidence={0}
-                        totalResources={0}
-                        costOfInaction={0}
-                        providerCosts={[]}
-                        isLoading
-                        activeProvider={activeProvider}
-                    />
-                </>
+                <div role="alert" className="mb-8 rounded-2xl border border-white/10 bg-slate-900/50 p-5 text-sm text-rose-400">
+                    Dashboard data unavailable
+                </div>
             ) : hasRenderableStats ? (
                 <>
                     <CostScoreSection
@@ -217,6 +208,7 @@ export function DashboardSectionsClient({
                         totalResources={stats.totalResources}
                         costOfInaction={stats.costOfInaction}
                         providerCosts={stats.providerCosts || []}
+                        mtdSpend={stats.mtdSpend}
                         activeProvider={activeProvider}
                     />
                 </>

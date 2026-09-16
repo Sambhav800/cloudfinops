@@ -4,6 +4,20 @@ import test from "node:test";
 // @ts-expect-error node --test --experimental-strip-types resolves this source module directly.
 import { normalizeResourceRow, toDisplayInrAmount } from "./contract.ts";
 
+function withFixtureExchangeRate(assertions: () => void): void {
+    const previousRate = process.env.NEXT_PUBLIC_USD_TO_INR_RATE;
+    try {
+        process.env.NEXT_PUBLIC_USD_TO_INR_RATE = "83";
+        assertions();
+    } finally {
+        if (previousRate === undefined) {
+            delete process.env.NEXT_PUBLIC_USD_TO_INR_RATE;
+        } else {
+            process.env.NEXT_PUBLIC_USD_TO_INR_RATE = previousRate;
+        }
+    }
+}
+
 test("control-plane resources render as no direct charge instead of billing unavailable", () => {
     const gcpService = normalizeResourceRow({
         user_id: "user-1",
@@ -99,43 +113,71 @@ test("actual billing source remains available even when the real cost is zero", 
 });
 
 test("official catalog estimates are visible without becoming billed monthly cost", () => {
-    const catalogEstimate = normalizeResourceRow({
-        user_id: "user-1",
-        integration_id: "int-1",
-        provider: "aws",
-        cloud_resource_id: "i-catalog",
-        resource_name: "i-catalog",
-        service_type: "AWS EC2 Instance",
-        cost: 14.25,
-        metadata: { cost_source: "catalog_estimate", pricing_source: "provider_catalog" },
-    });
+    withFixtureExchangeRate(() => {
+        const catalogEstimate = normalizeResourceRow({
+            user_id: "user-1",
+            integration_id: "int-1",
+            provider: "aws",
+            cloud_resource_id: "i-catalog",
+            resource_name: "i-catalog",
+            service_type: "AWS EC2 Instance",
+            cost: 14.25,
+            metadata: { cost_source: "catalog_estimate", pricing_source: "provider_catalog" },
+        });
 
-    assert.equal(catalogEstimate.cost_status, "catalog_estimate");
-    assert.equal(catalogEstimate.cost, 1182.75);
-    assert.equal(catalogEstimate.cost_label, "Catalog/mo est. ₹1,183");
-    assert.equal(catalogEstimate.annual_cost_label, "Catalog/yr est. ₹14,193");
-    assert.equal(catalogEstimate.monthly_cost_available, false);
+        assert.equal(catalogEstimate.cost_status, "catalog_estimate");
+        assert.equal(catalogEstimate.cost, 1182.75);
+        assert.equal(catalogEstimate.cost_label, "Catalog/mo est. ₹1,183");
+        assert.equal(catalogEstimate.annual_cost_label, "Catalog/yr est. ₹14,193");
+        assert.equal(catalogEstimate.monthly_cost_available, false);
+    });
 });
 
 test("gcp catalog estimates use stored provider-catalog currency before rupee display", () => {
-    const catalogEstimate = normalizeResourceRow({
-        user_id: "user-1",
-        integration_id: "int-1",
-        provider: "gcp",
-        cloud_resource_id: "vm-catalog",
-        resource_name: "vm-catalog",
-        service_type: "GCP Compute Instance",
-        cost: 5.548,
-        metadata: {
-            cost_source: "catalog_estimate",
-            pricing_source: "provider_catalog",
-            currency: "USD",
-        },
-    });
+    withFixtureExchangeRate(() => {
+        const catalogEstimate = normalizeResourceRow({
+            user_id: "user-1",
+            integration_id: "int-1",
+            provider: "gcp",
+            cloud_resource_id: "vm-catalog",
+            resource_name: "vm-catalog",
+            service_type: "GCP Compute Instance",
+            cost: 5.548,
+            metadata: {
+                cost_source: "catalog_estimate",
+                pricing_source: "provider_catalog",
+                currency: "USD",
+            },
+        });
 
-    assert.equal(toDisplayInrAmount(5.548, "USD"), 528.11);
-    assert.equal(catalogEstimate.cost_status, "catalog_estimate");
-    assert.equal(catalogEstimate.cost, 528.11);
-    assert.equal(catalogEstimate.cost_label, "Catalog/mo est. ₹460.48");
-    assert.equal(catalogEstimate.monthly_cost_available, false);
+        assert.equal(toDisplayInrAmount(5.548, "USD"), 460.48);
+        assert.equal(catalogEstimate.cost_status, "catalog_estimate");
+        assert.equal(catalogEstimate.cost, 460.48);
+        assert.equal(catalogEstimate.cost_label, "Catalog/mo est. ₹460.48");
+        assert.equal(catalogEstimate.monthly_cost_available, false);
+    });
+});
+
+test("fixture FX leaves stored INR estimates unchanged and preserves zero and empty inputs", () => {
+    withFixtureExchangeRate(() => {
+        const catalogEstimate = normalizeResourceRow({
+            user_id: "user-1",
+            integration_id: "int-1",
+            provider: "aws",
+            cloud_resource_id: "i-inr-catalog",
+            resource_name: "i-inr-catalog",
+            service_type: "AWS EC2 Instance",
+            cost: 14.25,
+            metadata: { cost_source: "catalog_estimate", currency: "INR" },
+        });
+
+        assert.equal(catalogEstimate.cost, 14.25);
+        assert.equal(catalogEstimate.cost_label, "Catalog/mo est. ₹14.25");
+        assert.equal(catalogEstimate.annual_cost_label, "Catalog/yr est. ₹171");
+        assert.equal(catalogEstimate.cost_status, "catalog_estimate");
+        assert.equal(catalogEstimate.monthly_cost_available, false);
+        assert.equal(toDisplayInrAmount(0, "USD"), 0);
+        assert.equal(toDisplayInrAmount(null, "USD"), 0);
+        assert.equal(toDisplayInrAmount("", "USD"), 0);
+    });
 });

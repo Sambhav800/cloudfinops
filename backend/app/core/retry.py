@@ -1,7 +1,10 @@
 import logging
+import math
 import random
 import re
 import time
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Callable, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -28,6 +31,14 @@ _RETRY_DELAY_PATTERNS = (
     re.compile(r"retry[_ -]?after[:= ]+(\d+)", re.IGNORECASE),
     re.compile(r"retry_delay.*?seconds[:= ]+(\d+)", re.IGNORECASE | re.DOTALL),
 )
+_RETRY_AFTER_HEADERS = {
+    "retry-after",
+    "x-ms-ratelimit-microsoft.costmanagement-entity-retry-after",
+    "x-ms-ratelimit-microsoft.costmanagement-tenant-retry-after",
+    "x-ms-ratelimit-microsoft.costmanagement-client-retry-after",
+    "x-ms-ratelimit-microsoft.costmanagement-clienttype-retry-after",
+    "x-ms-ratelimit-microsoft.costmanagement-qpu-retry-after",
+}
 
 
 def _exception_tuple(*classes: Any) -> tuple[type[BaseException], ...]:
@@ -53,12 +64,33 @@ def _retry_after_seconds(error: Exception) -> float | None:
     response = getattr(error, "response", None)
     headers = getattr(response, "headers", None)
     if headers:
-        retry_after = headers.get("Retry-After") or headers.get("retry-after")
-        if retry_after:
-            try:
-                return max(float(retry_after), 0.0)
-            except (TypeError, ValueError):
-                pass
+        delays: list[float] = []
+        for name, value in headers.items():
+            name = str(name).lower()
+            if name not in _RETRY_AFTER_HEADERS:
+                continue
+            values = value if isinstance(value, (list, tuple)) else (value,)
+            for candidate in values:
+                if not isinstance(candidate, (str, int, float)):
+                    continue
+                # Split combined values without splitting the comma inside an HTTP-date.
+                for token in re.split(r",(?!\s*\d{1,2}[\s-][A-Za-z]{3}[\s-])", str(candidate)):
+                    try:
+                        delay = float(token)
+                    except ValueError:
+                        if name != "retry-after":
+                            continue
+                        try:
+                            retry_at = parsedate_to_datetime(token.strip())
+                            if retry_at.tzinfo is None:
+                                retry_at = retry_at.replace(tzinfo=timezone.utc)
+                            delay = max(retry_at.timestamp() - time.time(), 0.0)
+                        except (TypeError, ValueError, OverflowError, OSError):
+                            continue
+                    if math.isfinite(delay) and delay >= 0:
+                        delays.append(delay)
+        if delays:
+            return max(delays)
 
     for candidate in (getattr(error, "retry_after", None), getattr(error, "retry_after_seconds", None)):
         if candidate is None:
@@ -90,7 +122,7 @@ def _backoff_delay(
 ) -> float:
     explicit_delay = _retry_after_seconds(error)
     if explicit_delay is not None:
-        return min(explicit_delay, max_delay)
+        return explicit_delay
 
     exponential = min(base_delay * (2 ** (attempt - 1)), max_delay)
     return min(exponential * random.uniform(0.8, 1.2), max_delay)

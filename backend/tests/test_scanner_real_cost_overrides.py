@@ -930,31 +930,40 @@ def test_azure_subscription_cost_uses_mtd_period_and_usd_normalized_currency():
     calls = []
 
     class FakeResult:
-        def __init__(self, rows):
+        def __init__(self, rows, dimension):
             self.rows = rows
+            self.columns = [SimpleNamespace(name=name) for name in ["Cost", "UsageDate", dimension, "Currency"]]
+            self.next_link = None
 
     class FakeQuery:
-        def usage(self, *, scope, parameters):
+        def usage(self, *, scope, parameters, **kwargs):
             calls.append((scope, parameters))
-            if parameters.dataset.granularity == "Daily":
-                return FakeResult([[97.0, "20260428", "INR"]])
-            return FakeResult([[97.0, "Virtual Machines", "INR"]])
+            dimension = parameters.dataset.grouping[0].name
+            today = date.today().strftime("%Y%m%d")
+            return FakeResult([[97.0, today, "Virtual Machines", "INR"]], dimension)
 
     class FakeCostManagementClient:
         def __init__(self, **_kwargs):
             self.query = FakeQuery()
 
-    scanner._azure_call = lambda _operation_name, func: func()
+        def close(self):
+            return None
 
-    with patch("azure.mgmt.costmanagement.CostManagementClient", FakeCostManagementClient):
+    with (
+        patch("app.scanners.azure_billing.CostManagementClient", FakeCostManagementClient),
+        patch("app.scanners.azure_billing.time.sleep"),
+    ):
         summary = scanner._fetch_subscription_cost_by_service()
 
     assert summary["total"] == 1.16
     assert summary["currency"] == "USD"
     assert summary["original_currency"] == "INR"
     assert summary["period"] == "current_month_to_date"
-    assert summary["daily_totals"] == [{"date": "2026-04-28", "amount": 1.16}]
-    assert summary["by_service"] == {"Virtual Machines": 1.16}
+    assert summary["daily_totals"][-1] == {
+        "date": date.today().isoformat(), "amount": 1.164,
+        "service_breakdown": {"Virtual Machines": 1.164},
+    }
+    assert summary["by_service"] == {"Virtual Machines": 1.164}
     assert calls[0][1].time_period.from_property.day == 1
     assert calls[1][1].time_period.from_property.day == 1
 

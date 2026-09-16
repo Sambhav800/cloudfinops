@@ -1,16 +1,10 @@
-"""
-Commitment Optimizer — recommends optimal RI/SP/CUD purchases based on usage analysis.
+"""Evidence-gated, offline commitment scenarios, not purchase instructions.
 
-Analyzes historical usage patterns to recommend:
-- AWS: Savings Plans (Compute vs EC2 Instance) and Reserved Instances
-- Azure: Reserved VM Instances
-- GCP: Committed Use Discounts (resource-based vs flexible)
-
-Key differentiators vs usage.ai:
-1. Full transparency — shows the math behind every recommendation
-2. Integrated with rightsizing — won't commit to oversized resources
-3. Multi-cloud unified view with cross-provider strategy
-4. Configurable risk tolerance (coverage target, max term, payment preference)
+Daily bills cannot establish hourly eligibility or utilization. Hourly callers
+must supply disjoint, homogeneous price groups, including zero hours, and attest
+residual costs after ALL existing commitments (including sharing). Quotes come
+from a trusted live-pricing adapter; this module does not fetch or independently
+authenticate provider prices or billing evidence.
 """
 
 import logging
@@ -18,7 +12,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional, Sequence, Tuple, TypeGuard
 
 logger = logging.getLogger(__name__)
 
@@ -43,59 +37,94 @@ class PaymentOption(str, Enum):
     NO_UPFRONT = "no_upfront"
 
 
-# Discount rates by provider/type/term/payment (percentage off on-demand)
-DISCOUNT_MATRIX: Dict[str, Dict[str, float]] = {
-    "aws_compute_savings_plan": {
-        "1_year_no_upfront": 0.20,
-        "1_year_partial_upfront": 0.25,
-        "1_year_all_upfront": 0.30,
-        "3_year_no_upfront": 0.36,
-        "3_year_partial_upfront": 0.42,
-        "3_year_all_upfront": 0.48,
-    },
-    "aws_ec2_instance_savings_plan": {
-        "1_year_no_upfront": 0.28,
-        "1_year_partial_upfront": 0.33,
-        "1_year_all_upfront": 0.38,
-        "3_year_no_upfront": 0.45,
-        "3_year_partial_upfront": 0.52,
-        "3_year_all_upfront": 0.58,
-    },
-    "azure_reserved_instance": {
-        "1_year_no_upfront": 0.25,
-        "1_year_all_upfront": 0.35,
-        "3_year_no_upfront": 0.40,
-        "3_year_all_upfront": 0.55,
-    },
-    "gcp_resource_cud": {
-        "1_year_no_upfront": 0.28,
-        "3_year_no_upfront": 0.55,
-    },
-    "gcp_flexible_cud": {
-        "1_year_no_upfront": 0.20,
-        "3_year_no_upfront": 0.46,
-    },
-}
+@dataclass(frozen=True)
+class UsageScope:
+    """group_id identifies a disjoint SKU/OS/tenancy/eligibility price group."""
+
+    provider: str
+    integration_id: str
+    account_id: str
+    region: str
+    instance_family: str
+    currency: str
+    group_id: str
+
+
+@dataclass(frozen=True)
+class HourlyUsageRecord:
+    """One full hour of eligible OD-equivalent cost, never amortized bill cost.
+
+    accounted_commitment_ids identifies the ENTIRE inventory supplied to the
+    optimizer, not just commitments that consumed this hour's usage. An empty
+    tuple explicitly attests no existing coverage; None means unknown coverage.
+    on_demand_rate uses the identical billing unit as the matched live quote.
+    """
+
+    scope: UsageScope
+    timestamp: datetime
+    on_demand_cost: float
+    on_demand_rate: float
+    residual_on_demand_cost: Optional[float] = None
+    granularity: str = "hourly"
+    cost_basis: str = "on_demand_equivalent"
+    charge_eligible: bool = False
+    coverage_verified: bool = False
+    coverage_source: str = ""
+    accounted_commitment_ids: Optional[Tuple[str, ...]] = None
+    environment: str = ""
+
+
+@dataclass(frozen=True)
+class LivePriceQuote:
+    """Matched OD and all-in committed rates per identical billing unit/hour.
+
+    Scope contains provider, region, family, currency and account/group identity.
+    verified attests a trusted adapter checked eligibility and matched live rates
+    from source. Only no-upfront AWS Savings Plan economics are implemented here.
+    """
+
+    scope: UsageScope
+    commitment_type: CommitmentType
+    term: Term
+    payment_option: PaymentOption
+    on_demand_rate: float
+    committed_rate: float
+    captured_at: datetime
+    valid_until: datetime
+    source: str
+    quote_id: str
+    verified: bool = False
+    pricing_basis: str = "live_api"
 
 
 @dataclass
 class UsageBaseline:
-    """Steady-state hourly usage derived from historical data."""
+    """Legacy summary fields plus the evidence required to support a scenario."""
+
     provider: str
     region: str
     instance_family: str
-    hourly_on_demand_cost: float
-    p10_hourly_cost: float  # 10th percentile — near-guaranteed minimum usage
-    p50_hourly_cost: float
-    p75_hourly_cost: float
+    hourly_on_demand_cost: Optional[float]
+    p10_hourly_cost: Optional[float]
+    p50_hourly_cost: Optional[float]
+    p75_hourly_cost: Optional[float]
     observation_days: int
-    instance_count_at_baseline: int = 1
+    instance_count_at_baseline: Optional[int] = None
     is_rightsized: bool = False
+    scope: Optional[UsageScope] = None
+    hourly_records: Tuple[HourlyUsageRecord, ...] = ()
+    window_start: Optional[datetime] = None
+    window_end: Optional[datetime] = None
+    missing_hours: int = 0
+    duplicate_hours: int = 0
+    evidence_status: str = "needs_review"
+    review_reasons: Tuple[str, ...] = ()
 
 
 @dataclass
 class CommitmentRecommendation:
-    """A specific commitment purchase recommendation with full transparency."""
+    """A review-required historical scenario, without calibrated confidence."""
+
     commitment_type: CommitmentType
     provider: str
     region: str
@@ -108,463 +137,431 @@ class CommitmentRecommendation:
     estimated_monthly_savings: float
     estimated_annual_savings: float
     coverage_pct: float
-    utilization_confidence: float
-    risk_level: str  # low, medium, high
+    utilization_confidence: Optional[float]
+    risk_level: str
     explanation: str
-    math_breakdown: Dict[str, Any]
-    priority: int = 0  # 1=highest
+    math_breakdown: Dict[str, object]
+    priority: int = 0
+    scope: Optional[UsageScope] = None
+    status: str = "needs_review"
+    pricing_basis: str = "live_api"
 
 
 @dataclass
 class CommitmentPortfolio:
-    """Complete commitment strategy across all providers."""
+    """Totals describe residual-only scenarios, never authoritative bill totals."""
+
     recommendations: List[CommitmentRecommendation]
     total_monthly_savings: float
     total_annual_savings: float
-    current_monthly_on_demand: float
-    projected_monthly_after_commitments: float
-    overall_coverage_pct: float
-    overall_savings_pct: float
-    existing_commitment_utilization: float
-    underutilized_commitments: List[Dict[str, Any]]
-    expiring_soon: List[Dict[str, Any]]
+    current_monthly_on_demand: Optional[float]
+    projected_monthly_after_commitments: Optional[float]
+    overall_coverage_pct: Optional[float]
+    overall_savings_pct: Optional[float]
+    existing_commitment_utilization: Optional[float]
+    underutilized_commitments: List[Dict[str, object]]
+    expiring_soon: List[Dict[str, object]]
     strategy_summary: str
+    currency: Optional[str] = None
+    status: str = "withheld"
+    withheld_reasons: List[str] = field(default_factory=list)
+    evaluations: List[Dict[str, object]] = field(default_factory=list)
 
 
 @dataclass
 class OptimizerConfig:
-    """User-configurable risk tolerance settings."""
-    coverage_target_pct: float = 75.0  # 70-80% is sweet spot
+    """Sizing/backtest policies, not statistical confidence or price defaults."""
+
+    coverage_target_pct: float = 75.0
     max_term: Term = Term.ONE_YEAR
     preferred_payment: PaymentOption = PaymentOption.NO_UPFRONT
-    min_observation_days: int = 30
-    min_savings_threshold: float = 50.0  # Don't recommend <$50/mo savings
+    min_observation_days: int = 30  # Training, excluding holdout.
+    min_savings_threshold: float = 50.0  # Portfolio currency per month.
     exclude_dev_test: bool = True
+    holdout_days: int = 7
+    max_quote_age_hours: float = 24.0
+    projection_hours_per_month: float = 730.0  # Normalization, not a forecast.
 
 
 def analyze_usage_baselines(
-    resources: List[Dict[str, Any]],
-    daily_spend: List[Dict[str, Any]],
+    resources: List[Dict[str, object]],
+    daily_spend: List[Dict[str, object]],
     provider: str,
 ) -> List[UsageBaseline]:
+    """Compatibility entry point: daily spend/inventory cannot prove hourly use."""
+    logger.info("Commitment baselines withheld: timestamped hourly evidence required")
+    return []
+
+
+def _number(value: object) -> TypeGuard[float]:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _aware(value: object) -> TypeGuard[datetime]:
+    return isinstance(value, datetime) and value.tzinfo is not None and value.utcoffset() is not None
+
+
+def _hour(value: object) -> bool:
+    if not _aware(value):
+        return False
+    utc = value.astimezone(timezone.utc)
+    return utc.minute == utc.second == utc.microsecond == 0
+
+
+def _valid_scope(scope: UsageScope) -> bool:
+    return (
+        isinstance(scope, UsageScope)
+        and all(isinstance(v, str) and v.strip() == v and v for v in vars(scope).values())
+        and scope.provider in {"aws", "azure", "gcp"}
+        and len(scope.currency) == 3
+        and scope.currency.isascii()
+        and scope.currency.isalpha()
+        and scope.currency.isupper()
+    )
+
+
+def _percentile(values: Sequence[float], fraction: float) -> float:
+    """Empirical lower order statistic; not a future utilization guarantee."""
+    return sorted(values)[math.floor((len(values) - 1) * fraction)]
+
+
+def analyze_hourly_usage_baselines(
+    records: Sequence[HourlyUsageRecord],
+    *,
+    window_start: datetime,
+    window_end: datetime,
+) -> List[UsageBaseline]:
+    """Validate an end-exclusive window; retain gaps, duplicates and zeros.
+
+    Malformed scope/window raises ValueError because it cannot be grouped safely.
+    Bad evidence within a known scope is retained as needs_review, never imputed.
     """
-    Analyze resource usage to determine steady-state baselines for commitment sizing.
+    if not _hour(window_start) or not _hour(window_end):
+        raise ValueError("An aware, hour-aligned, nonempty observation window is required")
+    start, end = window_start.astimezone(timezone.utc), window_end.astimezone(timezone.utc)
+    if end <= start:
+        raise ValueError("A nonempty observation window is required")
+    expected = int((end - start).total_seconds() / 3600)
+    groups: Dict[UsageScope, List[HourlyUsageRecord]] = {}
+    for row in records:
+        if not isinstance(row, HourlyUsageRecord) or not _valid_scope(row.scope):
+            raise ValueError("Hourly records require explicit provider/account/currency/group scope")
+        groups.setdefault(row.scope, []).append(row)
 
-    Uses daily spend data + resource inventory to compute:
-    - P10 hourly cost (conservative commitment target — near-guaranteed usage)
-    - P50 hourly cost (moderate commitment target)
-    - P75 hourly cost (aggressive commitment target)
-    """
-    if not daily_spend:
-        return []
-
-    amounts = [float(d.get("amount") or 0) for d in daily_spend if float(d.get("amount") or 0) > 0]
-    if len(amounts) < 7:
-        return []
-
-    amounts.sort()
-    n = len(amounts)
-
-    p10_daily = amounts[max(0, int(n * 0.10))]
-    p50_daily = amounts[int(n * 0.50)]
-    p75_daily = amounts[int(n * 0.75)]
-    avg_daily = sum(amounts) / n
-
-    # Group resources by family for family-level recommendations
-    family_costs: Dict[str, float] = {}
-    family_regions: Dict[str, str] = {}
-    family_counts: Dict[str, int] = {}
-    rightsized_families: set = set()
-
-    for r in resources:
-        cost = float(r.get("cost") or 0)
-        if cost <= 0:
-            continue
-
-        service_type = str(r.get("service_type") or "").lower()
-        metadata = r.get("metadata") or {}
-
-        # Only consider compute resources for commitments
-        if not any(kw in service_type for kw in ("ec2", "virtual machine", "compute", "vm")):
-            continue
-
-        # Skip dev/test
-        tags = r.get("tags") or {}
-        env = str(tags.get("environment") or tags.get("env") or "").lower()
-        if env in ("dev", "test", "staging", "sandbox"):
-            continue
-
-        # Extract family
-        instance_type = str(
-            metadata.get("instance_type") or metadata.get("vm_size") or
-            metadata.get("machine_type") or ""
-        )
-        family = _extract_family(instance_type, provider)
-        if not family:
-            family = "general"
-
-        region = str(r.get("region") or metadata.get("aws_region") or "")
-
-        # Check if resource has been rightsized
-        opt = metadata.get("optimization") or {}
-        rec = opt.get("recommendation") or {}
-        if rec.get("target_sku"):
-            rightsized_families.add(family)
-
-        key = f"{family}|{region}"
-        family_costs[key] = family_costs.get(key, 0) + cost
-        family_regions[key] = region
-        family_counts[key] = family_counts.get(key, 0) + 1
-
-    if not family_costs:
-        # Fall back to subscription-level baseline
-        baselines = [UsageBaseline(
-            provider=provider,
-            region="all",
-            instance_family="compute",
-            hourly_on_demand_cost=round(avg_daily / 24, 2),
-            p10_hourly_cost=round(p10_daily / 24, 2),
-            p50_hourly_cost=round(p50_daily / 24, 2),
-            p75_hourly_cost=round(p75_daily / 24, 2),
-            observation_days=n,
-        )]
-        return baselines
-
-    # Build per-family baselines scaled by family's share of total
-    total_resource_cost = sum(family_costs.values())
     baselines = []
-
-    for key, cost in family_costs.items():
-        family, region = key.split("|", 1) if "|" in key else (key, "")
-        share = cost / total_resource_cost if total_resource_cost > 0 else 0
-
+    for scope, rows in groups.items():
+        reasons = set()
+        timestamps = []
+        costs = []
+        for row in rows:
+            if not _hour(row.timestamp) or not start <= row.timestamp < end:
+                reasons.add("invalid_or_out_of_window_timestamp")
+            else:
+                timestamps.append(row.timestamp.astimezone(timezone.utc))
+            if row.granularity != "hourly" or row.cost_basis != "on_demand_equivalent":
+                reasons.add("hourly_on_demand_equivalent_required")
+            if row.charge_eligible is not True:
+                reasons.add("charge_eligibility_unproven")
+            if not isinstance(row.environment, str):
+                reasons.add("invalid_environment")
+            if (
+                row.coverage_verified is not True
+                or not isinstance(row.coverage_source, str) or not row.coverage_source.strip()
+                or not isinstance(row.accounted_commitment_ids, tuple)
+                or any(not isinstance(i, str) or not i for i in row.accounted_commitment_ids)
+                or len(set(row.accounted_commitment_ids)) != len(row.accounted_commitment_ids)
+            ):
+                reasons.add("existing_coverage_unproven")
+            residual = row.residual_on_demand_cost
+            if (
+                not _number(row.on_demand_cost) or row.on_demand_cost < 0
+                or not _number(row.on_demand_rate) or row.on_demand_rate <= 0
+                or not _number(residual) or not 0 <= residual <= row.on_demand_cost
+            ):
+                reasons.add("invalid_cost_or_residual")
+            else:
+                costs.append(residual)
+        duplicate = len(timestamps) - len(set(timestamps))
+        missing = expected - len(set(timestamps))
+        if duplicate:
+            reasons.add("duplicate_hours")
+        if missing:
+            reasons.add("missing_hours")
+        valid = not reasons
         baselines.append(UsageBaseline(
-            provider=provider,
-            region=region or "all",
-            instance_family=family,
-            hourly_on_demand_cost=round(avg_daily * share / 24, 2),
-            p10_hourly_cost=round(p10_daily * share / 24, 2),
-            p50_hourly_cost=round(p50_daily * share / 24, 2),
-            p75_hourly_cost=round(p75_daily * share / 24, 2),
-            observation_days=n,
-            instance_count_at_baseline=family_counts.get(key, 1),
-            is_rightsized=family in rightsized_families,
+            provider=scope.provider, region=scope.region, instance_family=scope.instance_family,
+            hourly_on_demand_cost=math.fsum(c / len(costs) for c in costs) if valid else None,
+            p10_hourly_cost=_percentile(costs, 0.10) if valid else None,
+            p50_hourly_cost=_percentile(costs, 0.50) if valid else None,
+            p75_hourly_cost=_percentile(costs, 0.75) if valid else None,
+            observation_days=len(set(timestamps)) // 24,
+            scope=scope, hourly_records=tuple(rows), window_start=start, window_end=end,
+            missing_hours=missing, duplicate_hours=duplicate,
+            evidence_status="validated" if valid else "needs_review",
+            review_reasons=tuple(sorted(reasons)),
         ))
+    return baselines
 
-    return sorted(baselines, key=lambda b: b.hourly_on_demand_cost, reverse=True)
+
+def _quote_problem(quote: LivePriceQuote, config: OptimizerConfig, now: datetime) -> Optional[str]:
+    if (
+        quote.verified is not True or quote.pricing_basis != "live_api"
+        or not isinstance(quote.source, str) or not quote.source.strip()
+        or not isinstance(quote.quote_id, str) or not quote.quote_id.strip()
+    ):
+        return "verified_live_quote_required"
+    if (
+        not _aware(quote.captured_at) or not _aware(quote.valid_until)
+        or not quote.captured_at <= now < quote.valid_until
+        or (now - quote.captured_at).total_seconds() / 3600 > config.max_quote_age_hours
+    ):
+        return "stale_or_invalid_quote_timestamp"
+    if (
+        quote.scope.provider != "aws"
+        or quote.commitment_type not in {CommitmentType.AWS_COMPUTE_SP, CommitmentType.AWS_EC2_SP}
+        or quote.payment_option != PaymentOption.NO_UPFRONT
+    ):
+        return "unsupported_product_or_upfront_cash_flow"
+    if (
+        quote.payment_option != config.preferred_payment or quote.term not in set(Term)
+        or (config.max_term == Term.ONE_YEAR and quote.term != Term.ONE_YEAR)
+    ):
+        return "quote_term_or_payment_mismatch"
+    if (
+        not _number(quote.on_demand_rate) or not _number(quote.committed_rate)
+        or not 0 < quote.committed_rate < quote.on_demand_rate
+    ):
+        return "invalid_matched_quote_rates"
+    ratio = quote.committed_rate / quote.on_demand_rate
+    if not 0 < ratio < 1 or not 0 < 1 - ratio < 1:
+        return "unrepresentable_quote_ratio"
+    return None
+
+
+def _backtest(costs: Sequence[float], covered_od: float, ratio: float) -> Dict[str, float]:
+    # Pay the full committed-rate obligation every hour, including zero-use hours.
+    hourly_commitment = covered_od * ratio
+    on_demand = math.fsum(costs)
+    covered = math.fsum(min(cost, covered_od) for cost in costs)
+    committed = hourly_commitment * len(costs)
+    uncovered = math.fsum(max(0.0, cost - covered_od) for cost in costs)
+    unused = math.fsum(max(0.0, hourly_commitment - min(cost, covered_od) * ratio) for cost in costs)
+    return {
+        "hourly_commitment": hourly_commitment,
+        "covered_on_demand_hourly_capacity": covered_od,
+        "holdout_on_demand_cost": on_demand,
+        "holdout_covered_on_demand_cost": covered,
+        "holdout_committed_cost": committed,
+        "holdout_uncovered_on_demand_cost": uncovered,
+        "holdout_unused_commitment_cost": unused,
+        "holdout_net_savings": covered - committed,
+        "holdout_coverage_pct": covered / on_demand * 100 if on_demand else 0.0,
+        "holdout_utilization_pct": (committed - unused) / committed * 100 if committed else 0.0,
+    }
 
 
 def generate_commitment_recommendations(
     baselines: List[UsageBaseline],
-    existing_commitments: List[Dict[str, Any]],
+    existing_commitments: List[Dict[str, object]],
     config: Optional[OptimizerConfig] = None,
+    live_quotes: Optional[Sequence[LivePriceQuote]] = None,
+    *,
+    now: Optional[datetime] = None,
 ) -> CommitmentPortfolio:
+    """Backtest one quote per scope; withhold ambiguous/incomplete portfolios.
+
+    No SDK calls, coverage inference, FX conversion, renewal advice or rightsizing
+    claims. Inventory IDs must be globally unique and include shared commitments;
+    each inventory row needs provider/integration_id/account_id/currency scope.
+    Positive holdout savings are scenarios for review, not term-wide forecasts.
     """
-    Generate optimal commitment recommendations from usage baselines.
+    config = config or OptimizerConfig()
+    now = datetime.now(timezone.utc) if now is None else now
+    if _aware(now):
+        now = now.astimezone(timezone.utc)
+    result = CommitmentPortfolio([], 0.0, 0.0, None, None, None, None, None, [], [], "")
+    reasons = result.withheld_reasons
+    if not live_quotes:
+        reasons.append("verified_live_quotes_required")
+    if not baselines:
+        reasons.append("validated_hourly_residual_evidence_required")
+    if (
+        not _aware(now) or not _number(config.coverage_target_pct)
+        or not 0 < config.coverage_target_pct <= 100
+        or not _number(config.min_savings_threshold) or config.min_savings_threshold < 0
+        or type(config.min_observation_days) is not int or config.min_observation_days < 1
+        or type(config.holdout_days) is not int or config.holdout_days < 1
+        or not _number(config.max_quote_age_hours) or config.max_quote_age_hours <= 0
+        or not _number(config.projection_hours_per_month) or config.projection_hours_per_month <= 0
+        or config.max_term not in set(Term) or config.preferred_payment not in set(PaymentOption)
+    ):
+        reasons.append("invalid_optimizer_config_or_clock")
 
-    Strategy:
-    1. Use P10 (conservative) baseline for commitment sizing — this is the
-       near-guaranteed minimum usage that will be utilized.
-    2. Choose commitment type based on workload flexibility needs.
-    3. Calculate exact savings with full math transparency.
-    4. Factor in existing commitments to avoid over-commitment.
-    """
-    if config is None:
-        config = OptimizerConfig()
+    # Amount fields have no established unit here; never subtract or sum them.
+    inventory_ids = [c.get("id") for c in existing_commitments]
+    if any(not isinstance(i, str) or not i for i in inventory_ids):
+        reasons.append("existing_commitment_inventory_ids_required")
+    elif len(set(inventory_ids)) != len(inventory_ids):
+        reasons.append("duplicate_existing_commitment_ids")
+    if any(
+        not isinstance(c.get(key), str) or not c[key].strip()
+        for c in existing_commitments
+        for key in ("provider", "integration_id", "account_id", "currency")
+    ):
+        reasons.append("existing_commitment_scope_required")
 
-    recommendations: List[CommitmentRecommendation] = []
-    total_on_demand = 0.0
-    total_savings = 0.0
-
-    # Analyze existing commitments
-    existing_hourly = sum(float(c.get("commitment_amount") or 0) for c in existing_commitments)
-    existing_util = _avg_utilization(existing_commitments)
-    underutilized = _find_underutilized(existing_commitments)
-    expiring = _find_expiring_soon(existing_commitments)
-
+    validated = []
     for baseline in baselines:
-        if baseline.observation_days < config.min_observation_days:
+        if not baseline.hourly_records or baseline.scope is None:
+            reasons.append("legacy_summary_is_not_hourly_evidence")
             continue
-
-        monthly_on_demand = baseline.hourly_on_demand_cost * 730
-        total_on_demand += monthly_on_demand
-
-        if monthly_on_demand < config.min_savings_threshold:
-            continue
-
-        # Determine commitment sizing from P10 (conservative baseline)
-        # This ensures >90% utilization of the commitment
-        target_hourly = baseline.p10_hourly_cost * (config.coverage_target_pct / 100)
-
-        if target_hourly <= 0:
-            continue
-
-        # Choose optimal commitment type
-        commitment_type = _select_commitment_type(baseline)
-        term = config.max_term
-        payment = config.preferred_payment
-
-        # Get discount rate
-        discount_key = f"{term.value}_{payment.value}"
-        discount = DISCOUNT_MATRIX.get(commitment_type.value, {}).get(discount_key, 0.15)
-
-        # Calculate savings
-        committed_hourly = target_hourly
-        monthly_commitment = committed_hourly * 730
-        monthly_savings = monthly_commitment * discount
-        annual_savings = monthly_savings * 12
-
-        if monthly_savings < config.min_savings_threshold:
-            continue
-
-        coverage_pct = round(
-            (committed_hourly / baseline.hourly_on_demand_cost * 100)
-            if baseline.hourly_on_demand_cost > 0 else 0,
-            1,
-        )
-
-        # Utilization confidence based on how conservative the commitment is
-        util_confidence = round(min(0.99, 0.85 + (baseline.observation_days - 30) * 0.002), 2)
-        if baseline.is_rightsized:
-            util_confidence = min(0.99, util_confidence + 0.05)
-
-        risk = "low" if coverage_pct <= 70 else ("medium" if coverage_pct <= 85 else "high")
-
-        math_breakdown = {
-            "on_demand_hourly": baseline.hourly_on_demand_cost,
-            "p10_hourly": baseline.p10_hourly_cost,
-            "p50_hourly": baseline.p50_hourly_cost,
-            "p75_hourly": baseline.p75_hourly_cost,
-            "coverage_target_pct": config.coverage_target_pct,
-            "committed_hourly": round(committed_hourly, 4),
-            "discount_rate": discount,
-            "monthly_on_demand": round(monthly_on_demand, 2),
-            "monthly_committed": round(monthly_commitment, 2),
-            "monthly_savings": round(monthly_savings, 2),
-            "break_even_months": round(monthly_commitment / monthly_savings, 1) if monthly_savings > 0 else 999,
-            "observation_days": baseline.observation_days,
-            "instance_family": baseline.instance_family,
-            "region": baseline.region,
-        }
-
-        term_label = "1-year" if term == Term.ONE_YEAR else "3-year"
-        payment_label = payment.value.replace("_", " ").title()
-        type_label = _commitment_type_label(commitment_type)
-
-        explanation = (
-            f"Based on {baseline.observation_days} days of usage data, "
-            f"your {baseline.instance_family} workload in {baseline.region} "
-            f"has a steady baseline of ${baseline.p10_hourly_cost:.2f}/hr (P10). "
-            f"Purchasing a {term_label} {type_label} ({payment_label}) at "
-            f"${committed_hourly:.2f}/hr covers {coverage_pct:.0f}% of your baseline usage "
-            f"with a {discount*100:.0f}% discount, saving ${monthly_savings:.0f}/mo "
-            f"(${annual_savings:.0f}/yr). "
-            f"Break-even in {math_breakdown['break_even_months']:.0f} months."
-        )
-
-        if baseline.is_rightsized:
-            explanation += (
-                " This workload has already been rightsized, increasing commitment "
-                "utilization confidence."
+        try:
+            rebuilt = analyze_hourly_usage_baselines(
+                baseline.hourly_records,
+                window_start=baseline.window_start, window_end=baseline.window_end,
             )
+        except ValueError:
+            reasons.append("invalid_hourly_evidence_scope_or_window")
+            continue
+        if len(rebuilt) != 1 or rebuilt[0].scope != baseline.scope:
+            reasons.append("baseline_scope_mismatch")
+            continue
+        checked = rebuilt[0]
+        if checked.evidence_status != "validated":
+            reasons.extend(checked.review_reasons)
+        validated.append(checked)
 
-        recommendations.append(CommitmentRecommendation(
-            commitment_type=commitment_type,
-            provider=baseline.provider,
-            region=baseline.region,
-            instance_family=baseline.instance_family,
-            term=term,
-            payment_option=payment,
-            hourly_commitment=round(committed_hourly, 4),
-            monthly_commitment=round(monthly_commitment, 2),
-            discount_rate=discount,
-            estimated_monthly_savings=round(monthly_savings, 2),
-            estimated_annual_savings=round(annual_savings, 2),
-            coverage_pct=coverage_pct,
-            utilization_confidence=util_confidence,
-            risk_level=risk,
-            explanation=explanation,
-            math_breakdown=math_breakdown,
-            priority=_compute_priority(monthly_savings, risk, util_confidence),
+    scopes = [b.scope for b in validated]
+    if len(set(scopes)) != len(scopes):
+        reasons.append("duplicate_baseline_scope")
+    currencies = {s.currency for s in scopes}
+    if len(currencies) > 1:
+        reasons.append("mixed_currencies_run_separately")
+    if len({(b.window_start, b.window_end) for b in validated}) > 1:
+        reasons.append("observation_windows_must_match")
+
+    prepared = []
+    if not reasons:
+        for baseline in validated:
+            rows = sorted(baseline.hourly_records, key=lambda r: r.timestamp.astimezone(timezone.utc))
+            if baseline.window_end > now or baseline.observation_days < config.min_observation_days + config.holdout_days:
+                reasons.append("insufficient_completed_training_and_holdout_hours")
+            if any(set(r.accounted_commitment_ids) != set(inventory_ids) for r in rows):
+                reasons.append("existing_commitment_inventory_not_reconciled")
+            if config.exclude_dev_test and any(r.environment.lower() in {"dev", "test", "staging", "sandbox"} for r in rows):
+                reasons.append("dev_test_usage_excluded")
+            matches = [q for q in live_quotes if q.scope == baseline.scope]
+            if len(matches) != 1:
+                reasons.append("one_unambiguous_scoped_live_quote_required")
+                continue
+            quote = matches[0]
+            problem = _quote_problem(quote, config, now)
+            if problem:
+                reasons.append(problem)
+            elif any(r.on_demand_rate != quote.on_demand_rate for r in rows):
+                reasons.append("hourly_and_quoted_on_demand_rates_must_match")
+            prepared.append((baseline, rows, quote))
+
+    if reasons:
+        result.withheld_reasons = sorted(set(reasons))
+        result.strategy_summary = "Recommendations withheld: " + "; ".join(result.withheld_reasons) + "."
+        return result
+
+    result.currency = next(iter(currencies))
+    monthly_on_demand = []
+    monthly_covered = []
+    holdout_hours = config.holdout_days * 24
+    factor = config.projection_hours_per_month / holdout_hours
+    for baseline, rows, quote in prepared:
+        training = [r.residual_on_demand_cost for r in rows[:-holdout_hours]]
+        holdout = [r.residual_on_demand_cost for r in rows[-holdout_hours:]]
+        target = _percentile(training, 0.10) * (config.coverage_target_pct / 100)
+        ratio = quote.committed_rate / quote.on_demand_rate
+        try:
+            math_values = _backtest(holdout, target, ratio)
+            monthly_savings = math_values["holdout_net_savings"] * factor
+            monthly_cost = math_values["holdout_on_demand_cost"] * factor
+            monthly_commitment = math_values["hourly_commitment"] * config.projection_hours_per_month
+            if (
+                not all(math.isfinite(v) for v in [*math_values.values(), monthly_savings * 12, monthly_cost, monthly_commitment])
+                or (target > 0 and math_values["hourly_commitment"] == 0)
+            ):
+                raise ValueError("Non-finite financial result")
+        except (OverflowError, ValueError):
+            result.recommendations.clear()
+            result.withheld_reasons.append("non_finite_financial_result")
+            result.strategy_summary = "Recommendations withheld: non-finite financial result."
+            return result
+        monthly_on_demand.append(monthly_cost)
+        breakdown: Dict[str, object] = {
+            **math_values,
+            "scope": baseline.scope,
+            "quote_id": quote.quote_id,
+            "quote_source": quote.source,
+            "quote_captured_at": quote.captured_at.isoformat(),
+            "quote_valid_until": quote.valid_until.isoformat(),
+            "pricing_basis": quote.pricing_basis,
+            "on_demand_rate": quote.on_demand_rate,
+            "committed_rate": quote.committed_rate,
+            "training_hours": len(training),
+            "training_p10_residual_on_demand_cost": _percentile(training, 0.10),
+            "holdout_hours": holdout_hours,
+            "projection_hours_per_month": config.projection_hours_per_month,
+            "estimated_monthly_savings": monthly_savings,
+            "status": "needs_review" if monthly_savings > 0 and target > 0 else "withheld",
+        }
+        result.evaluations.append(breakdown)
+        if target <= 0 or monthly_savings <= 0 or monthly_savings < config.min_savings_threshold:
+            breakdown["status"] = "withheld"
+            breakdown["reason"] = "no_positive_baseline_or_holdout_savings_above_threshold"
+            continue
+        monthly_covered.append(math_values["holdout_covered_on_demand_cost"] * factor)
+        result.recommendations.append(CommitmentRecommendation(
+            commitment_type=quote.commitment_type, provider=baseline.provider,
+            region=baseline.region, instance_family=baseline.instance_family,
+            term=quote.term, payment_option=quote.payment_option,
+            hourly_commitment=math_values["hourly_commitment"], monthly_commitment=monthly_commitment,
+            discount_rate=1 - ratio, estimated_monthly_savings=monthly_savings,
+            estimated_annual_savings=monthly_savings * 12,
+            coverage_pct=math_values["holdout_coverage_pct"], utilization_confidence=None,
+            risk_level="needs_review", scope=baseline.scope, math_breakdown=breakdown,
+            explanation=(
+                "Review required: committed-rate hourly obligation evaluated on chronological "
+                "holdout residual usage, including unused commitment cost. Monthly/annual values "
+                "are normalized historical scenarios, not forecasts or purchase approval. "
+                "Future usage, rightsizing, renewal and term-wide savings remain unproven."
+            ),
         ))
 
-        total_savings += monthly_savings
-
-    # Sort by priority (highest savings + lowest risk first)
-    recommendations.sort(key=lambda r: r.priority)
-
-    projected_monthly = total_on_demand - total_savings
-    overall_savings_pct = round(
-        (total_savings / total_on_demand * 100) if total_on_demand > 0 else 0, 1
+    try:
+        savings = math.fsum(r.estimated_monthly_savings for r in result.recommendations)
+        on_demand = math.fsum(monthly_on_demand)
+        covered = math.fsum(monthly_covered)
+        if not all(math.isfinite(v) for v in (savings * 12, on_demand, covered)):
+            raise ValueError("Non-finite portfolio total")
+    except (OverflowError, ValueError):
+        result.recommendations.clear()
+        result.withheld_reasons.append("non_finite_portfolio_total")
+        result.strategy_summary = "Recommendations withheld: non-finite portfolio total."
+        return result
+    result.total_monthly_savings = savings
+    result.total_annual_savings = savings * 12
+    result.current_monthly_on_demand = on_demand
+    result.projected_monthly_after_commitments = result.current_monthly_on_demand - result.total_monthly_savings
+    if result.current_monthly_on_demand:
+        result.overall_coverage_pct = covered / result.current_monthly_on_demand * 100
+        result.overall_savings_pct = result.total_monthly_savings / result.current_monthly_on_demand * 100
+    result.status = "needs_review" if result.recommendations else "withheld"
+    result.strategy_summary = (
+        "Historical residual-only scenarios require review; no calibrated confidence or purchase approval. "
+        f"Totals use {result.currency} and {config.projection_hours_per_month:g} hours/month, "
+        "not total bills or term forecasts. Existing commitment utilization/renewal is not evaluated."
+        if result.recommendations else
+        "Recommendations withheld: no positive baseline or holdout savings above threshold; see evaluations."
     )
-    overall_coverage = round(
-        sum(r.coverage_pct * r.monthly_commitment for r in recommendations)
-        / max(sum(r.monthly_commitment for r in recommendations), 1),
-        1,
-    )
-
-    strategy = _generate_strategy_summary(
-        recommendations, total_on_demand, total_savings,
-        existing_commitments, underutilized, expiring, config,
-    )
-
-    return CommitmentPortfolio(
-        recommendations=recommendations,
-        total_monthly_savings=round(total_savings, 2),
-        total_annual_savings=round(total_savings * 12, 2),
-        current_monthly_on_demand=round(total_on_demand, 2),
-        projected_monthly_after_commitments=round(projected_monthly, 2),
-        overall_coverage_pct=overall_coverage,
-        overall_savings_pct=overall_savings_pct,
-        existing_commitment_utilization=existing_util,
-        underutilized_commitments=underutilized,
-        expiring_soon=expiring,
-        strategy_summary=strategy,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _extract_family(instance_type: str, provider: str) -> str:
-    """Extract instance family from type name."""
-    if not instance_type:
-        return ""
-    if provider == "aws" and "." in instance_type:
-        return instance_type.split(".")[0]
-    elif provider == "azure" and instance_type.startswith("Standard_"):
-        import re
-        match = re.match(r"Standard_([A-Z]+)\d+", instance_type)
-        return match.group(1) if match else ""
-    elif provider == "gcp" and "-" in instance_type:
-        parts = instance_type.rsplit("-", 1)
-        return parts[0] if len(parts) == 2 else ""
-    return ""
-
-
-def _select_commitment_type(baseline: UsageBaseline) -> CommitmentType:
-    """Select optimal commitment type based on workload characteristics."""
-    p = baseline.provider.lower()
-    if p == "aws":
-        if baseline.instance_count_at_baseline >= 3:
-            return CommitmentType.AWS_COMPUTE_SP
-        return CommitmentType.AWS_EC2_SP
-    elif p == "azure":
-        return CommitmentType.AZURE_RI
-    elif p == "gcp":
-        if baseline.instance_count_at_baseline >= 3:
-            return CommitmentType.GCP_FLEXIBLE_CUD
-        return CommitmentType.GCP_RESOURCE_CUD
-    return CommitmentType.AWS_COMPUTE_SP
-
-
-def _commitment_type_label(ct: CommitmentType) -> str:
-    labels = {
-        CommitmentType.AWS_COMPUTE_SP: "Compute Savings Plan",
-        CommitmentType.AWS_EC2_SP: "EC2 Instance Savings Plan",
-        CommitmentType.AWS_RI: "Reserved Instance",
-        CommitmentType.AZURE_RI: "Reserved VM Instance",
-        CommitmentType.GCP_RESOURCE_CUD: "Resource-Based CUD",
-        CommitmentType.GCP_FLEXIBLE_CUD: "Flexible CUD",
-    }
-    return labels.get(ct, ct.value)
-
-
-def _avg_utilization(commitments: List[Dict[str, Any]]) -> float:
-    utils = [float(c.get("utilization_pct") or 0) for c in commitments if float(c.get("utilization_pct") or 0) > 0]
-    return round(sum(utils) / len(utils), 1) if utils else 0.0
-
-
-def _find_underutilized(commitments: List[Dict[str, Any]], threshold: float = 80.0) -> List[Dict[str, Any]]:
-    return [
-        {
-            "id": c.get("id"),
-            "name": c.get("name"),
-            "type": c.get("type"),
-            "utilization_pct": float(c.get("utilization_pct") or 0),
-            "commitment_amount": float(c.get("commitment_amount") or 0),
-            "wasted_monthly": round(
-                float(c.get("commitment_amount") or 0) * (1 - float(c.get("utilization_pct") or 0) / 100),
-                2,
-            ),
-            "action": "Consider downsizing or letting expire" if float(c.get("utilization_pct") or 0) < 50 else "Monitor — may recover with seasonal usage",
-        }
-        for c in commitments
-        if float(c.get("utilization_pct") or 0) < threshold and c.get("status") == "active"
-    ]
-
-
-def _find_expiring_soon(commitments: List[Dict[str, Any]], days: int = 60) -> List[Dict[str, Any]]:
-    now = datetime.now(timezone.utc)
-    results = []
-    for c in commitments:
-        end_str = c.get("end_date") or ""
-        try:
-            end_date = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
-            days_left = (end_date - now).days
-            if 0 < days_left <= days:
-                results.append({
-                    "id": c.get("id"),
-                    "name": c.get("name"),
-                    "type": c.get("type"),
-                    "end_date": end_str,
-                    "days_left": days_left,
-                    "utilization_pct": float(c.get("utilization_pct") or 0),
-                    "action": "Renew" if float(c.get("utilization_pct") or 0) > 70 else "Let expire — underutilized",
-                })
-        except (ValueError, TypeError):
-            continue
-    return sorted(results, key=lambda x: x["days_left"])
-
-
-def _compute_priority(monthly_savings: float, risk: str, confidence: float) -> int:
-    score = monthly_savings * confidence
-    if risk == "high":
-        score *= 0.5
-    elif risk == "medium":
-        score *= 0.8
-    return -int(score)  # Negative for descending sort
-
-
-def _generate_strategy_summary(
-    recommendations: List[CommitmentRecommendation],
-    total_on_demand: float,
-    total_savings: float,
-    existing: List[Dict[str, Any]],
-    underutilized: List[Dict[str, Any]],
-    expiring: List[Dict[str, Any]],
-    config: OptimizerConfig,
-) -> str:
-    parts = []
-
-    if not recommendations:
-        return "No commitment recommendations at this time. Either spend is too low for meaningful savings or insufficient usage data (need 30+ days)."
-
-    savings_pct = (total_savings / total_on_demand * 100) if total_on_demand > 0 else 0
-    parts.append(
-        f"Recommended {len(recommendations)} commitment(s) saving "
-        f"${total_savings:.0f}/mo (${total_savings*12:.0f}/yr), "
-        f"reducing on-demand spend by {savings_pct:.0f}%."
-    )
-
-    if underutilized:
-        waste = sum(u["wasted_monthly"] for u in underutilized)
-        parts.append(
-            f"WARNING: {len(underutilized)} existing commitment(s) are underutilized, "
-            f"wasting ${waste:.0f}/mo. Address these before purchasing new commitments."
-        )
-
-    if expiring:
-        parts.append(
-            f"{len(expiring)} commitment(s) expiring within 60 days — "
-            f"review for renewal or replacement."
-        )
-
-    term_label = "1-year" if config.max_term == Term.ONE_YEAR else "3-year"
-    parts.append(
-        f"Strategy: {config.coverage_target_pct:.0f}% coverage target, "
-        f"{term_label} max term, {config.preferred_payment.value.replace('_', ' ')} payment."
-    )
-
-    return " ".join(parts)
+    return result

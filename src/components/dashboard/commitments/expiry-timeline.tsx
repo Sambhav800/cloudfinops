@@ -92,7 +92,7 @@ export function ExpiryTimeline({
                 )}
                 {criticalCount === 0 && warningCount === 0 && (
                     <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-medium text-emerald-400">
-                        All commitments healthy
+                        No known expirations within 90 days
                     </span>
                 )}
             </div>

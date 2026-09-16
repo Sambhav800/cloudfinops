@@ -1,210 +1,150 @@
-"""
-Commitment-Aware Classification — RI/SP/CUD coverage impacts termination recommendations.
-
-Problem: If a resource is covered by a Reserved Instance or Savings Plan,
-terminating it doesn't save money — the commitment keeps billing. The savings
-only come if the commitment can be reused or sold on the marketplace.
-
-This module connects to the existing commitment_engine to:
-1. Flag RI/SP-covered resources in verdicts
-2. Adjust savings estimates (stranded commitment = reduced real savings)
-3. Recommend commitment marketplace selling when applicable
-4. Prefer rightsizing over termination for committed resources
-"""
+"""Resource commitment coverage requires explicit, current billing allocations."""
 
 import logging
+import math
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class CommitmentCoverage:
-    """How a resource is covered by commitments."""
-
     is_covered: bool = False
-    coverage_type: Optional[str] = None  # "reserved_instance", "savings_plan", "cud"
-    coverage_percentage: float = 0.0  # 0-100
+    assessment_status: str = "unverified"
+    coverage_type: Optional[str] = None
+    coverage_percentage: Optional[float] = None
     commitment_end_date: Optional[str] = None
     remaining_months: int = 0
-    stranded_monthly_cost: float = 0.0  # Cost that continues if resource terminated
+    stranded_monthly_cost: Optional[float] = None
+    currency: Optional[str] = None
     marketplace_eligible: bool = False
-    recommendation_adjustment: str = ""  # How this affects our recommendation
+    recommendation_adjustment: str = "Resource-level commitment allocation has not been measured."
+
+
+def _number(value: object) -> Optional[float]:
+    try:
+        number = float(value)
+        return number if math.isfinite(number) and number >= 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _fresh(value: object) -> bool:
+    try:
+        timestamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if timestamp.tzinfo is None:
+            return False
+        return timedelta(0) <= datetime.now(timezone.utc) - timestamp <= timedelta(hours=48)
+    except (TypeError, ValueError):
+        return False
+
+
+def _allocation(commitment: dict, resource_id: str) -> dict:
+    allocations = commitment.get("resource_allocations")
+    allocation = allocations.get(resource_id) if isinstance(allocations, dict) else None
+    if not isinstance(allocation, dict):
+        return {}
+    if allocation.get("source") not in {"aws_cur", "azure_cost_details", "gcp_billing_export"}:
+        return {}
+    return allocation if _fresh(allocation.get("observed_at")) else {}
 
 
 async def check_commitment_coverage(
-    db: Any,
-    user_id: str,
-    integration_id: str,
-    resource_id: str,
-    resource_type: str = "",
-    provider: str = "aws",
+    db: Any, user_id: str, integration_id: str, resource_id: str,
+    resource_type: str = "", provider: str = "aws",
 ) -> CommitmentCoverage:
-    """
-    Check if a resource is covered by a commitment (RI/SP/CUD).
-
-    Queries the commitment_engine's stored data to determine coverage.
-    If covered, returns how this should affect the optimization recommendation.
-    """
+    """Read allocation evidence without inferring coverage from inventory utilization."""
     if not db:
         return CommitmentCoverage()
-
     try:
-        # Check for active commitments that might cover this resource
-        commitments = await db.select(
-            "cloud_commitments",
-            filters={
-                "user_id": user_id,
-                "integration_id": integration_id,
-                "status": "active",
-            },
-        )
-
-        if not commitments:
-            # Try the savings plan utilization data
-            return await _check_savings_plan_coverage(db, user_id, integration_id)
-
-        # Look for RIs matching this resource
-        for commitment in commitments:
-            if _commitment_covers_resource(commitment, resource_id, resource_type, provider):
-                remaining_months = commitment.get("remaining_months", 0)
-                monthly_cost = float(commitment.get("monthly_cost", 0) or 0)
-
-                return CommitmentCoverage(
-                    is_covered=True,
-                    coverage_type=commitment.get("type", "reserved_instance"),
-                    coverage_percentage=float(commitment.get("utilization_pct", 100)),
-                    commitment_end_date=commitment.get("end_date"),
-                    remaining_months=remaining_months,
-                    stranded_monthly_cost=monthly_cost,
-                    marketplace_eligible=_is_marketplace_eligible(commitment, provider),
-                    recommendation_adjustment=_build_adjustment_message(
-                        commitment, monthly_cost, remaining_months
-                    ),
-                )
-
-        return CommitmentCoverage()
-
-    except Exception as e:
-        logger.debug(f"Commitment coverage check failed: {e}")
-        return CommitmentCoverage()
-
-
-async def _check_savings_plan_coverage(
-    db: Any, user_id: str, integration_id: str
-) -> CommitmentCoverage:
-    """Check if the integration has active Savings Plans with high utilization."""
-    try:
-        sp_data = await db.select(
-            "dashboard_stats",
+        snapshots = await db.select(
+            "commitment_snapshots",
             filters={"user_id": user_id, "integration_id": integration_id},
         )
-        if sp_data:
-            metadata = sp_data[0].get("metadata", {})
-            sp_utilization = metadata.get("savings_plan_utilization_pct", 0)
-            if sp_utilization > 80:
+        for snapshot in snapshots:
+            if snapshot.get("status") != "ready" or not _fresh(snapshot.get("last_success_at")):
+                continue
+            for commitment in snapshot.get("commitments", []):
+                if not isinstance(commitment, dict) or not _commitment_covers_resource(commitment, resource_id, resource_type, provider):
+                    continue
+                allocation = _allocation(commitment, resource_id)
+                percentage = _number(allocation.get("coverage_percentage"))
+                if percentage is None or not 0 < percentage <= 100:
+                    continue
+                currency = allocation.get("currency")
+                marginal_verified = (
+                    allocation.get("marginal_cost_verified") is True
+                    and allocation.get("cost_period") == "monthly"
+                    and isinstance(currency, str) and bool(currency)
+                    and currency == commitment.get("currency")
+                )
+                stranded = _number(allocation.get("stranded_monthly_cost")) if marginal_verified else None
                 return CommitmentCoverage(
                     is_covered=True,
-                    coverage_type="savings_plan",
-                    coverage_percentage=sp_utilization,
+                    assessment_status="verified" if stranded is not None else "coverage_only",
+                    coverage_type=commitment.get("type"),
+                    coverage_percentage=percentage,
+                    commitment_end_date=commitment.get("end_date"),
+                    stranded_monthly_cost=stranded,
+                    currency=currency,
+                    marketplace_eligible=_is_marketplace_eligible(commitment, provider),
                     recommendation_adjustment=(
-                        f"This account has {sp_utilization:.0f}% Savings Plan utilization. "
-                        f"Terminating resources may strand commitment capacity."
+                        "Coverage is supported by resource-level billing allocation. "
+                        "Marginal savings require the stranded commitment cost in the same currency and period."
                     ),
                 )
-    except Exception:
-        pass
+        return CommitmentCoverage()
+    except Exception as error:
+        logger.warning("Commitment coverage evidence unavailable (%s)", type(error).__name__)
+        return CommitmentCoverage(assessment_status="unavailable")
+
+
+async def _check_savings_plan_coverage(db: Any, user_id: str, integration_id: str) -> CommitmentCoverage:
+    """Account-level utilization cannot establish an individual resource's coverage."""
     return CommitmentCoverage()
 
 
 def adjust_verdict_for_commitment(
-    verdict_monthly_waste: float,
-    coverage: CommitmentCoverage,
+    verdict_monthly_waste: float, coverage: CommitmentCoverage, *, currency: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Adjust a waste verdict's savings estimate based on commitment coverage.
-
-    If a resource is RI-covered, the "real" savings from termination are
-    reduced by the stranded commitment cost that continues billing.
-
-    Returns adjustment metadata to include in the verdict.
-    """
-    if not coverage.is_covered:
-        return {"commitment_aware": False}
-
-    real_savings = max(0, verdict_monthly_waste - coverage.stranded_monthly_cost)
-    savings_reduction_pct = 0
-    if verdict_monthly_waste > 0:
-        savings_reduction_pct = (
-            (verdict_monthly_waste - real_savings) / verdict_monthly_waste * 100
-        )
-
-    action_recommendation = "terminate"
-    if coverage.remaining_months > 6 and real_savings < verdict_monthly_waste * 0.3:
-        action_recommendation = "rightsize_instead"
-    elif coverage.marketplace_eligible:
-        action_recommendation = "sell_on_marketplace"
-
+    """Adjust only when the allocation includes a measured marginal stranded cost."""
+    result = {
+        "commitment_aware": coverage.is_covered,
+        "assessment_status": coverage.assessment_status,
+        "adjustment_note": coverage.recommendation_adjustment,
+    }
+    waste = _number(verdict_monthly_waste)
+    stranded = _number(coverage.stranded_monthly_cost)
+    if (not coverage.is_covered or coverage.assessment_status != "verified"
+        or stranded is None or waste is None or not currency or currency != coverage.currency):
+        return {**result, "real_monthly_savings": None, "recommended_action": "review_commitment_allocation"}
+    real_savings = max(0.0, waste - stranded)
     return {
-        "commitment_aware": True,
+        **result,
         "coverage_type": coverage.coverage_type,
         "coverage_pct": coverage.coverage_percentage,
         "stranded_monthly_cost": coverage.stranded_monthly_cost,
         "real_monthly_savings": real_savings,
-        "savings_reduction_pct": round(savings_reduction_pct, 1),
-        "recommended_action": action_recommendation,
+        "savings_reduction_pct": round((waste - real_savings) / waste * 100, 1) if waste else 0,
+        "recommended_action": "review_commitment_allocation",
         "marketplace_eligible": coverage.marketplace_eligible,
-        "adjustment_note": coverage.recommendation_adjustment,
     }
 
 
-def _commitment_covers_resource(
-    commitment: Dict, resource_id: str, resource_type: str, provider: str
-) -> bool:
-    """Determine if a commitment covers a specific resource."""
-    # RI matching: instance type, region, platform
-    covered_ids = commitment.get("covered_resource_ids", [])
-    if resource_id in covered_ids:
-        return True
-
-    # Fuzzy match on instance type family
-    commitment_type = commitment.get("instance_type", "")
-    if commitment_type and resource_type:
-        # Same family match (e.g., m5 covers m5.large, m5.xlarge, etc.)
-        commit_family = commitment_type.split(".")[0] if "." in commitment_type else ""
-        resource_family = resource_type.split(".")[0] if "." in resource_type else ""
-        if commit_family and resource_family and commit_family == resource_family:
-            return True
-
-    return False
+def _commitment_covers_resource(commitment: Dict, resource_id: str, resource_type: str, provider: str) -> bool:
+    return (
+        commitment.get("provider") == provider
+        and commitment.get("status") == "active"
+        and bool(_allocation(commitment, resource_id))
+    )
 
 
 def _is_marketplace_eligible(commitment: Dict, provider: str) -> bool:
-    """Check if a commitment can be sold on the RI marketplace."""
-    if provider != "aws":
-        return False  # Only AWS has RI marketplace
-
-    commitment_type = commitment.get("type", "")
-    if commitment_type == "reserved_instance":
-        remaining = commitment.get("remaining_months", 0)
-        return remaining > 1  # Need at least 1 month remaining
-
-    return False
-
-
-def _build_adjustment_message(
-    commitment: Dict, monthly_cost: float, remaining_months: int
-) -> str:
-    """Build a human-readable adjustment message."""
-    commitment_type = commitment.get("type", "commitment")
-    total_stranded = monthly_cost * remaining_months
-
-    if remaining_months > 0 and monthly_cost > 0:
-        return (
-            f"Resource is covered by {commitment_type} "
-            f"(${monthly_cost:.0f}/mo, {remaining_months} months remaining, "
-            f"${total_stranded:.0f} total stranded cost). "
-            f"Consider rightsizing instead of termination."
-        )
-    return f"Resource has {commitment_type} coverage."
+    return (
+        provider == "aws"
+        and commitment.get("type") in {"Reservation", "reserved_instance"}
+        and commitment.get("offering_class") == "standard"
+        and commitment.get("marketplace_eligibility_verified") is True
+    )

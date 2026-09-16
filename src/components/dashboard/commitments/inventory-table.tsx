@@ -4,6 +4,8 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import { Cloud, Calendar } from "lucide-react";
 import Link from "next/link";
+import type { CloudCommitment } from "@/lib/api";
+import { formatCommitmentPercent, formatSavingsPeriod } from "@/lib/commitments/presentation";
 import {
     Table,
     TableHeader,
@@ -14,24 +16,11 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 
-export interface FormattedCommitment {
-    id: string;
-    provider: string;
-    type: string;
-    name: string;
-    status: string;
-    end_date: string;
-    commitment_amount: number;
-    region: string | null;
-    utilization_pct: number;
-    savings_amount: number;
-    coverage_type: string;
-    daysRemaining: number;
-    displayStatus: "Critical" | "Warning" | "Stable";
+export interface FormattedCommitment extends CloudCommitment {
+    daysRemaining: number | null;
     endDateStr: string;
     formattedAmount: string;
     formattedSavings: string;
-    riskLevel: "Low" | "Medium" | "High";
 }
 
 type FilterTab = "all" | "active" | "expiring" | "expired";
@@ -47,12 +36,6 @@ const PROVIDER_BADGE: Record<string, string> = {
     gcp: "border-blue-500/20 bg-blue-500/10 text-blue-400",
 };
 
-const RISK_BADGE: Record<string, string> = {
-    Low: "border-emerald-500/20 bg-emerald-500/10 text-emerald-400",
-    Medium: "border-amber-500/20 bg-amber-500/10 text-amber-400",
-    High: "border-rose-500/20 bg-rose-500/10 text-rose-400",
-};
-
 const TABS: { key: FilterTab; label: string }[] = [
     { key: "all", label: "All" },
     { key: "active", label: "Active" },
@@ -65,15 +48,15 @@ export function InventoryTable({ commitments, isLoading }: InventoryTableProps) 
 
     const filtered = commitments.filter((c) => {
         if (activeTab === "all") return true;
-        if (activeTab === "active") return c.status === "active" && c.daysRemaining > 90;
-        if (activeTab === "expiring") return c.status === "active" && c.daysRemaining <= 90;
-        if (activeTab === "expired") return c.status === "expired" || c.daysRemaining <= 0;
+        if (activeTab === "active") return c.status === "active" && (c.daysRemaining === null || c.daysRemaining > 0);
+        if (activeTab === "expiring") return c.status === "active" && c.daysRemaining !== null && c.daysRemaining > 0 && c.daysRemaining <= 90;
+        if (activeTab === "expired") return c.status === "expired" || (c.daysRemaining !== null && c.daysRemaining <= 0);
         return true;
     });
 
     return (
         <div>
-            <div className="mb-4 flex items-center justify-between">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
                     <Calendar className="h-5 w-5 text-amber-400" />
                     <h2 className="text-lg font-bold text-white">Commitment Inventory</h2>
@@ -121,12 +104,12 @@ export function InventoryTable({ commitments, isLoading }: InventoryTableProps) 
                         </div>
                         <h4 className="text-sm font-medium text-white">
                             {commitments.length === 0
-                                ? "No commitments found"
+                                ? "No commitment rows in this snapshot"
                                 : "No commitments match this filter"}
                         </h4>
                         <p className="mt-1 max-w-xs text-xs text-slate-500">
                             {commitments.length === 0
-                                ? "Connect a cloud account and run a scan to see your commitment inventory."
+                                ? "See account sync status above."
                                 : "Try selecting a different filter tab."}
                         </p>
                     </div>
@@ -142,13 +125,13 @@ export function InventoryTable({ commitments, isLoading }: InventoryTableProps) 
                                         Region
                                     </TableHead>
                                     <TableHead className="px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                                        Value
+                                        Monthly equivalent
                                     </TableHead>
                                     <TableHead className="px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                                         Utilization
                                     </TableHead>
                                     <TableHead className="px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                                        Savings
+                                        Measured savings
                                     </TableHead>
                                     <TableHead className="px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                                         Risk
@@ -164,7 +147,7 @@ export function InventoryTable({ commitments, isLoading }: InventoryTableProps) 
                             <TableBody>
                                 {filtered.map((item) => (
                                     <TableRow
-                                        key={item.id}
+                                        key={`${item.integration_id}-${item.id}`}
                                         className="border-b border-white/5 transition-colors hover:bg-white/[0.03]"
                                     >
                                         <TableCell className="px-4 py-3">
@@ -184,18 +167,21 @@ export function InventoryTable({ commitments, isLoading }: InventoryTableProps) 
                                                     <p className="text-[10px] text-slate-500">
                                                         {item.type} &middot; {item.coverage_type}
                                                     </p>
+                                                    <p className="break-all text-[10px] text-slate-500">Integration: {item.integration_id || "Not measured"}</p>
+                                                    <p className="text-[10px] text-slate-500">Source: {item.source}</p>
+                                                    <p className="text-[10px] text-slate-500">Pricing basis: {item.pricing_basis === "live_api" ? "Provider API" : "Not measured"}</p>
                                                 </div>
                                             </div>
                                         </TableCell>
                                         <TableCell className="px-4 py-3 text-xs text-slate-400">
-                                            {item.region || "Global"}
+                                            {item.region || "Not measured"}
                                         </TableCell>
                                         <TableCell className="px-4 py-3 text-xs font-medium text-white">
                                             {item.formattedAmount}
                                         </TableCell>
                                         <TableCell className="px-4 py-3">
                                             <div className="flex items-center gap-2">
-                                                <div className="h-1.5 w-16 overflow-hidden rounded-full bg-slate-800">
+                                                {item.utilization_pct != null && <div className="h-1.5 w-16 overflow-hidden rounded-full bg-slate-800">
                                                     <div
                                                         className={`h-full rounded-full transition-all duration-700 ${
                                                             item.utilization_pct >= 85
@@ -206,50 +192,37 @@ export function InventoryTable({ commitments, isLoading }: InventoryTableProps) 
                                                         }`}
                                                         style={{ width: `${Math.min(item.utilization_pct, 100)}%` }}
                                                     />
-                                                </div>
-                                                <span
-                                                    className={`text-xs font-medium ${
-                                                        item.utilization_pct >= 85
-                                                            ? "text-emerald-400"
-                                                            : item.utilization_pct >= 70
-                                                              ? "text-amber-400"
-                                                              : "text-rose-400"
-                                                    }`}
-                                                >
-                                                    {item.utilization_pct.toFixed(0)}%
+                                                </div>}
+                                                <span className="text-xs font-medium text-slate-300">
+                                                    {formatCommitmentPercent(item.utilization_pct)}
                                                 </span>
                                             </div>
                                         </TableCell>
                                         <TableCell className="px-4 py-3 text-xs font-medium text-emerald-400">
                                             {item.formattedSavings}
+                                            <p className="mt-1 text-[10px] text-slate-400">{formatSavingsPeriod(item.savings_period_start, item.savings_period_end)}</p>
                                         </TableCell>
                                         <TableCell className="px-4 py-3">
-                                            <span
-                                                className={`inline-flex rounded-md border px-2 py-0.5 text-[10px] font-medium ${
-                                                    RISK_BADGE[item.riskLevel]
-                                                }`}
-                                            >
-                                                {item.riskLevel}
-                                            </span>
+                                            <span className="text-xs text-slate-400">Not measured</span>
                                         </TableCell>
                                         <TableCell className="px-4 py-3">
                                             <p className="text-xs text-slate-300">{item.endDateStr}</p>
                                             <p
                                                 className={`text-[10px] ${
-                                                    item.daysRemaining < 30
+                                                    item.daysRemaining !== null && item.daysRemaining < 30
                                                         ? "font-bold text-rose-400"
-                                                        : item.daysRemaining < 90
+                                                        : item.daysRemaining !== null && item.daysRemaining < 90
                                                           ? "text-amber-400"
                                                           : "text-slate-500"
                                                 }`}
                                             >
-                                                {item.daysRemaining > 0
+                                                {item.daysRemaining === null ? "Not measured" : item.daysRemaining > 0
                                                     ? `${item.daysRemaining}d left`
                                                     : "Expired"}
                                             </p>
                                         </TableCell>
                                         <TableCell className="px-4 py-3 text-right">
-                                            <Link href={`/dashboard/simulator?id=${item.id}&action=renew`}>
+                                            <Link href={`/dashboard/simulator?id=${encodeURIComponent(item.id)}&action=renew`}>
                                                 <button className="rounded-lg bg-indigo-600 px-3 py-1.5 text-[10px] font-medium text-white transition hover:bg-indigo-500">
                                                     Simulate
                                                 </button>

@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 from app.api.agent_routes import agent_router
 from app.api.agents_status_routes import status_router
@@ -114,7 +115,8 @@ def _build_client(fake_db: FakeAgentRoutesDB) -> TestClient:
     return TestClient(app)
 
 
-def test_agent_summary_returns_live_account_snapshot():
+def test_agent_summary_returns_live_account_snapshot(monkeypatch):
+    monkeypatch.setattr("app.core.finance.DEFAULT_USD_TO_INR_RATE", 83.0)
     client = _build_client(FakeAgentRoutesDB())
 
     response = client.get("/api/agent/summary")
@@ -134,6 +136,28 @@ def test_agent_summary_returns_live_account_snapshot():
     assert "₹207.50/month" in payload["summary"]
     assert "2 open alerts" in payload["summary"]
     assert "$" not in payload["summary"]
+
+
+@pytest.mark.parametrize("rate", [80.0, 90.0])
+def test_agent_summary_uses_the_same_conversion_as_finance(monkeypatch, rate):
+    from app.core.finance import aggregate_daily_spend_rows
+
+    monkeypatch.setattr("app.core.finance.DEFAULT_USD_TO_INR_RATE", rate)
+    response = _build_client(FakeAgentRoutesDB()).get("/api/agent/summary")
+    assert response.status_code == 200
+    history = aggregate_daily_spend_rows([
+        {"spend_date": "2026-03-22", "amount": 11, "currency": "USD"},
+    ])
+    assert response.json()["total_spend"] == history[0]["amount"] == 11 * rate
+    assert response.json()["savings"] == 2.5 * rate
+
+
+@pytest.mark.parametrize("amount", [0, None])
+def test_agent_conversion_preserves_empty_and_native_inr_values(amount):
+    from app.api.agent_routes import _to_display_inr
+
+    assert _to_display_inr(amount, "USD") == 0
+    assert _to_display_inr(123.45, "INR") == 123.45
 
 
 class EmptyAgentRoutesDB(FakeAgentRoutesDB):

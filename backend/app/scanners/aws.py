@@ -9,10 +9,11 @@ import collections
 from botocore.exceptions import ClientError
 from typing import List, Dict, Optional, Any, Set
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import logging
+import math
 
 from ..core.retry import build_aws_retry_config, call_with_backoff, is_aws_retryable
 from ..core.workload_patterns import (
@@ -2116,28 +2117,21 @@ class AWSScanner:
                             cache_enabled = bool(stage.get('cacheClusterEnabled', False))
                             cache_size = float(stage.get('cacheClusterSize', '0') or '0')
 
-                            # CloudWatch metrics (7 days)
-                            invocations_7d = 0
-                            error_4xx = 0
-                            error_5xx = 0
-                            latency_p99 = 0
-                            cache_hits = 0
-                            cache_misses = 0
+                            # Missing telemetry is not evidence of zero traffic.
+                            end_time = datetime.now(timezone.utc)
+                            start_time = end_time - timedelta(days=7)
+                            dimensions = [
+                                {'Name': 'ApiName', 'Value': api_name},
+                                {'Name': 'Stage', 'Value': stage_name},
+                            ]
+                            metric_collection: Dict[str, str] = {}
 
-                            try:
-                                from datetime import datetime, timedelta
-                                end_time = datetime.utcnow()
-                                start_time = end_time - timedelta(days=7)
-                                dimensions = [
-                                    {'Name': 'ApiName', 'Value': api_name},
-                                    {'Name': 'Stage', 'Value': stage_name},
-                                ]
-
-                                for metric_name, target in [
-                                    ('Count', 'invocations'),
-                                    ('4XXError', '4xx'),
-                                    ('5XXError', '5xx'),
-                                ]:
+                            def collect_metric(metric_name: str) -> Optional[float]:
+                                try:
+                                    statistic = (
+                                        {'ExtendedStatistics': ['p99']}
+                                        if metric_name == 'Latency' else {'Statistics': ['Sum']}
+                                    )
                                     resp = cw_client.get_metric_statistics(
                                         Namespace='AWS/ApiGateway',
                                         MetricName=metric_name,
@@ -2145,65 +2139,65 @@ class AWSScanner:
                                         StartTime=start_time,
                                         EndTime=end_time,
                                         Period=604800,
-                                        Statistics=['Sum'],
+                                        **statistic,
                                     )
                                     dps = resp.get('Datapoints', [])
-                                    total = sum(dp.get('Sum', 0) for dp in dps)
-                                    if target == 'invocations':
-                                        invocations_7d = int(total)
-                                    elif target == '4xx':
-                                        error_4xx = int(total)
-                                    elif target == '5xx':
-                                        error_5xx = int(total)
-
-                                # Latency p99
-                                resp = cw_client.get_metric_statistics(
-                                    Namespace='AWS/ApiGateway',
-                                    MetricName='Latency',
-                                    Dimensions=dimensions,
-                                    StartTime=start_time,
-                                    EndTime=end_time,
-                                    Period=604800,
-                                    ExtendedStatistics=['p99'],
-                                )
-                                dps = resp.get('Datapoints', [])
-                                if dps:
-                                    latency_p99 = dps[0].get('ExtendedStatistics', {}).get('p99', 0)
-
-                                # Cache metrics
-                                if cache_enabled:
-                                    for m, tgt in [('CacheHitCount', 'hits'), ('CacheMissCount', 'misses')]:
-                                        resp = cw_client.get_metric_statistics(
-                                            Namespace='AWS/ApiGateway',
-                                            MetricName=m,
-                                            Dimensions=dimensions,
-                                            StartTime=start_time,
-                                            EndTime=end_time,
-                                            Period=604800,
-                                            Statistics=['Sum'],
+                                    if not dps:
+                                        metric_collection[metric_name] = 'no_data'
+                                        return None
+                                    values = [
+                                        dp.get('ExtendedStatistics', {}).get('p99')
+                                        if metric_name == 'Latency' else dp.get('Sum')
+                                        for dp in dps
+                                    ]
+                                    if any(
+                                        isinstance(value, bool)
+                                        or not isinstance(value, (int, float))
+                                        or not math.isfinite(value)
+                                        or value < 0
+                                        for value in values
+                                    ):
+                                        metric_collection[metric_name] = 'invalid_data'
+                                        logger.warning(
+                                            "API Gateway %s metric has invalid datapoints in %s", metric_name, region,
                                         )
-                                        dps = resp.get('Datapoints', [])
-                                        val = sum(dp.get('Sum', 0) for dp in dps)
-                                        if tgt == 'hits':
-                                            cache_hits = int(val)
-                                        else:
-                                            cache_misses = int(val)
-                            except Exception:
-                                pass
+                                        return None
+                                    value = float(values[0] if metric_name == 'Latency' else sum(values))
+                                    if not math.isfinite(value) or (metric_name != 'Latency' and not value.is_integer()):
+                                        metric_collection[metric_name] = 'invalid_data'
+                                        logger.warning("API Gateway %s metric has an invalid total in %s", metric_name, region)
+                                        return None
+                                    metric_collection[metric_name] = 'available'
+                                    return value
+                                except Exception as error:
+                                    metric_collection[metric_name] = 'error'
+                                    self._handle_scan_error(f"API Gateway CloudWatch {metric_name}", error, region)
+                                    return None
+
+                            request_count = collect_metric('Count')
+                            invocations_7d = int(request_count) if request_count is not None else None
+                            error_4xx = collect_metric('4XXError')
+                            error_5xx = collect_metric('5XXError')
+                            latency_p99 = collect_metric('Latency')
+                            cache_hits = collect_metric('CacheHitCount') if cache_enabled else None
+                            cache_misses = collect_metric('CacheMissCount') if cache_enabled else None
 
                             cache_hit_rate = None
-                            if cache_enabled and (cache_hits + cache_misses) > 0:
+                            if cache_hits is not None and cache_misses is not None and (cache_hits + cache_misses) > 0:
                                 cache_hit_rate = round((cache_hits / (cache_hits + cache_misses)) * 100, 2)
 
-                            error_rate_4xx = round((error_4xx / invocations_7d) * 100, 2) if invocations_7d > 0 else 0
-                            error_rate_5xx = round((error_5xx / invocations_7d) * 100, 2) if invocations_7d > 0 else 0
+                            error_rate_4xx = None
+                            error_rate_5xx = None
+                            if invocations_7d is not None and invocations_7d > 0:
+                                if error_4xx is not None:
+                                    error_rate_4xx = round((error_4xx / invocations_7d) * 100, 2)
+                                if error_5xx is not None:
+                                    error_rate_5xx = round((error_5xx / invocations_7d) * 100, 2)
 
                             # Determine status
-                            status = 'Active'
-                            waste_type = None
+                            status = 'Unknown' if invocations_7d is None else 'Active'
                             if invocations_7d == 0:
                                 status = 'Zombie'
-                                waste_type = 'ghost_api'
 
                             meta = {
                                 'api_id': api_id,
@@ -2212,10 +2206,11 @@ class AWSScanner:
                                 'stage_name': stage_name,
                                 'endpoint_type': endpoint_type,
                                 'invocations_7d': invocations_7d,
-                                'avg_daily_invocations': round(invocations_7d / 7, 1),
+                                'metric_collection': metric_collection,
+                                'avg_daily_invocations': round(invocations_7d / 7, 1) if invocations_7d is not None else None,
                                 'error_rate_4xx': error_rate_4xx,
                                 'error_rate_5xx': error_rate_5xx,
-                                'latency_p99_ms': round(latency_p99, 1),
+                                'latency_p99_ms': round(latency_p99, 1) if latency_p99 is not None else None,
                                 'cache_enabled': cache_enabled,
                                 'cache_hit_rate': cache_hit_rate,
                                 'cache_size_gb': cache_size,

@@ -15,10 +15,14 @@ import { motion } from 'framer-motion';
 import { ExcludeResourceModal } from '@/components/dashboard/exclude-resource-modal';
 
 import { formatInrCurrency } from '@/lib/resources/contract';
+import type { DashboardMtdSpend, DashboardProviderCost } from '@/lib/dashboard/data';
+import { BillingFreshness } from '@/components/dashboard/cost-score-section';
 
 // --- Types ---
 interface DashboardStats {
     totalSpend: number;
+    mtdSpend?: DashboardMtdSpend;
+    providerCosts?: DashboardProviderCost[];
 }
 
 interface WasteCategory {
@@ -175,8 +179,7 @@ export function DashboardOverview({
 }: DashboardOverviewProps & { activeProvider?: 'all' | 'aws' | 'azure' | 'gcp' }) {
     const [activeTab, setActiveTab] = useState<InventoryTab>('all');
     const [shieldingResource, setShieldingResource] = useState<(ResourceItem & { category?: string }) | null>(null);
-    const providerCosts =
-        ((stats as { providerCosts?: Array<{ provider: string; spend: number }> } | null)?.providerCosts ?? []);
+    const providerCosts = stats?.providerCosts ?? [];
     const filteredStats = activeProvider === 'all'
         ? stats
         : stats
@@ -364,10 +367,7 @@ export function DashboardOverview({
                                     Portfolio spend over time
                                 </p>
                             </div>
-                            <span className="flex items-center gap-1.5 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-xs text-emerald-400">
-                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                                Live
-                            </span>
+                            <BillingFreshness billing={stats?.mtdSpend} />
                         </div>
 
                         {spendChartData.length === 0 ? (

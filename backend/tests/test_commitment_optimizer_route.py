@@ -1,6 +1,8 @@
 import os
-import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+from collections.abc import Iterator
+from copy import deepcopy
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, Mock
 
 os.environ.setdefault("CLERK_SECRET_KEY", "test_clerk_secret_key_12345")
 os.environ.setdefault("MONGODB_URI", "mongodb://localhost:27017/test_db")
@@ -8,256 +10,373 @@ os.environ.setdefault("ENCRYPTION_KEY", "12345678901234567890123456789012")
 
 import tests.conftest  # noqa: F401
 
-import unittest
-from datetime import datetime, timezone, timedelta
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.api.finance_routes import finance_router
 from app.api.routes import router
 from app.auth import ClerkUser, get_current_user
-from app.db import get_db_client
+from app.core import commitment_optimizer, commitment_recommendations
 from app.core.commitment_engine import commitment_engine
+from app.core.commitment_recommendations import PURCHASE_SNAPSHOTS, SOURCE
+from app.db import get_db_client
+
+USER_ID = "user-1"
+INTEGRATION_ID = "int-aws"
+ACCOUNT_ID = "123456789012"
+ROUTE = "/api/commitment-recommendations"
+FINANCE_ROUTE = "/api/finance/commitment-recommendation"
+
+
+def integration(
+    integration_id: str = INTEGRATION_ID,
+    *,
+    user_id: str = USER_ID,
+    provider: str = "aws",
+    status: str = "active",
+) -> dict[str, str]:
+    return {"id": integration_id, "user_id": user_id, "provider": provider, "status": status}
+
+
+def snapshot(
+    now: datetime,
+    *,
+    integration_id: str = INTEGRATION_ID,
+    account_id: str = ACCOUNT_ID,
+    user_id: str = USER_ID,
+) -> dict[str, object]:
+    scenarios: list[dict[str, object]] = []
+    for years, monthly_saving in ((1, 10.0), (3, 25.0)):
+        scenarios.append({
+            "label": f"{years}-year Compute Savings Plan",
+            "monthly_commitment_usd": 365.0,
+            "monthly_saving_usd": monthly_saving,
+            "annual_saving_usd": monthly_saving * 12,
+            "term_years": years,
+            "hourly_commitment_usd": 0.5,
+            "integration_id": integration_id,
+            "account_id": account_id,
+            "recommendation_id": f"{integration_id}-{years}",
+            "generated_at": now.isoformat(),
+        })
+    return {
+        "id": f"{user_id}-{integration_id}",
+        "user_id": user_id,
+        "integration_id": integration_id,
+        "account_id": account_id,
+        "source": SOURCE,
+        "status": "ready",
+        "fetched_at": now.isoformat(),
+        "generated_at": now.isoformat(),
+        "scenarios": scenarios,
+    }
 
 
 class FakeOptimizerDB:
-    def __init__(self, integrations=None, resources=None, daily_spend=None):
-        self.integrations = integrations or []
-        self.resources = resources or []
-        self.daily_spend = daily_spend or []
+    def __init__(self) -> None:
+        self.integrations = [integration()]
+        self.rows: list[dict[str, object]] = []
+        self.integration_reads: list[str] = []
+        self.snapshot_reads: list[dict[str, str]] = []
+        self.failure_on: str | None = None
 
-    async def get_user_integrations(self, user_id):
-        return [i for i in self.integrations if i.get("user_id") == user_id]
+    async def get_user_integrations(self, user_id: str) -> list[dict[str, str]]:
+        assert user_id == USER_ID
+        self.integration_reads.append(user_id)
+        if self.failure_on == "integrations":
+            raise RuntimeError("secret database address")
+        return deepcopy([row for row in self.integrations if row["user_id"] == user_id])
 
-    async def get_daily_spend_history(self, user_id, integration_id=None, days=90):
-        if integration_id:
-            return [
-                d for d in self.daily_spend
-                if d.get("integration_id") == integration_id
-            ][-days:]
-        return self.daily_spend[-days:]
-
-    async def get_resources(self, user_id, integration_id=None):
-        if integration_id:
-            return [
-                r for r in self.resources
-                if r.get("integration_id") == integration_id
-            ]
-        return list(self.resources)
-
-
-class TestCommitmentOptimizerRoute(unittest.TestCase):
-    def setUp(self):
-        self.app = FastAPI()
-        self.app.include_router(router)
-        self.mock_commitments_patch = patch.object(
-            commitment_engine, "get_commitments", new_callable=AsyncMock
-        )
-        self.mock_get_commitments = self.mock_commitments_patch.start()
-        self.mock_get_commitments.return_value = []
-
-    def tearDown(self):
-        self.mock_commitments_patch.stop()
-
-    def test_get_commitment_recommendations_authenticated_with_usage(self):
-        daily_spend = [
-            {
-                "integration_id": "int-aws-1",
-                "spend_date": f"2026-03-{d:02d}",
-                "amount": 250.0 + (d * 2.0),
-                "currency": "USD",
-            }
-            for d in range(1, 31)
-        ]
-        resources = [
-            {
-                "id": f"res-ec2-{i}",
-                "integration_id": "int-aws-1",
-                "service_type": "Amazon EC2",
-                "cost": 150.0,
-                "region": "us-east-1",
-                "metadata": {"instance_type": "m5.xlarge"},
-                "tags": {"environment": "production"},
-            }
-            for i in range(4)
-        ]
-        integrations = [
-            {
-                "id": "int-aws-1",
-                "user_id": "user-test-1",
-                "provider": "aws",
-                "status": "active",
-                "name": "Production AWS",
-            }
-        ]
-        fake_db = FakeOptimizerDB(
-            integrations=integrations,
-            resources=resources,
-            daily_spend=daily_spend,
-        )
-
-        self.app.dependency_overrides[get_current_user] = lambda: ClerkUser(id="user-test-1")
-        self.app.dependency_overrides[get_db_client] = lambda: fake_db
-
-        client = TestClient(self.app)
-        response = client.get("/api/commitment-recommendations")
-
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-
-        self.assertIn("recommendations", data)
-        self.assertIn("total_monthly_savings", data)
-        self.assertIn("total_annual_savings", data)
-        self.assertIn("overall_coverage_pct", data)
-        self.assertIn("strategy_summary", data)
-
-        self.assertGreater(data["total_annual_savings"], 0)
-        self.assertGreater(len(data["recommendations"]), 0)
-
-        first_rec = data["recommendations"][0]
-        self.assertEqual(first_rec["provider"], "aws")
-        self.assertIn("m5", first_rec["instance_family"])
-        self.assertIn("savings", first_rec["explanation"].lower())
-        self.assertIn("break_even_months", first_rec["math_breakdown"])
-
-    def test_get_commitment_recommendations_with_query_params(self):
-        daily_spend = [
-            {
-                "integration_id": "int-aws-1",
-                "spend_date": f"2026-03-{d:02d}",
-                "amount": 300.0,
-                "currency": "USD",
-            }
-            for d in range(1, 31)
-        ]
-        resources = [
-            {
-                "id": "res-ec2-1",
-                "integration_id": "int-aws-1",
-                "service_type": "Amazon EC2",
-                "cost": 300.0,
-                "region": "us-east-1",
-                "metadata": {"instance_type": "c5.2xlarge"},
-            }
-        ]
-        integrations = [
-            {
-                "id": "int-aws-1",
-                "user_id": "user-test-2",
-                "provider": "aws",
-                "status": "active",
-            }
-        ]
-        fake_db = FakeOptimizerDB(
-            integrations=integrations,
-            resources=resources,
-            daily_spend=daily_spend,
-        )
-
-        self.app.dependency_overrides[get_current_user] = lambda: ClerkUser(id="user-test-2")
-        self.app.dependency_overrides[get_db_client] = lambda: fake_db
-
-        client = TestClient(self.app)
-        response = client.get(
-            "/api/commitment-recommendations?coverage_target=80&max_term=3_year&payment_option=all_upfront"
-        )
-
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertIn("recommendations", data)
-        if data["recommendations"]:
-            rec = data["recommendations"][0]
-            self.assertEqual(rec["term"], "3_year")
-            self.assertEqual(rec["payment_option"], "all_upfront")
-
-    def test_get_commitment_recommendations_with_underutilized_and_expiring(self):
-        daily_spend = [
-            {
-                "integration_id": "int-aws-1",
-                "spend_date": f"2026-03-{d:02d}",
-                "amount": 200.0,
-                "currency": "USD",
-            }
-            for d in range(1, 31)
-        ]
-        resources = [
-            {
-                "id": "res-ec2-1",
-                "integration_id": "int-aws-1",
-                "service_type": "Amazon EC2",
-                "cost": 200.0,
-                "region": "us-east-1",
-                "metadata": {"instance_type": "t3.medium"},
-            }
-        ]
-        integrations = [
-            {
-                "id": "int-aws-1",
-                "user_id": "user-test-3",
-                "provider": "aws",
-                "status": "active",
-            }
-        ]
-        fake_db = FakeOptimizerDB(
-            integrations=integrations,
-            resources=resources,
-            daily_spend=daily_spend,
-        )
-
-        now = datetime.now(timezone.utc)
-        expiring_date = (now + timedelta(days=25)).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-        self.mock_get_commitments.return_value = [
-            {
-                "id": "comm-under-1",
-                "name": "Underutilized Compute SP",
-                "type": "Savings Plan",
-                "status": "active",
-                "utilization_pct": 42.0,
-                "commitment_amount": 1000.0,
-                "end_date": (now + timedelta(days=200)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            },
-            {
-                "id": "comm-exp-1",
-                "name": "Expiring Soon EC2 RI",
-                "type": "Reservation",
-                "status": "active",
-                "utilization_pct": 92.0,
-                "commitment_amount": 800.0,
-                "end_date": expiring_date,
-            },
-        ]
-
-        self.app.dependency_overrides[get_current_user] = lambda: ClerkUser(id="user-test-3")
-        self.app.dependency_overrides[get_db_client] = lambda: fake_db
-
-        client = TestClient(self.app)
-        response = client.get("/api/commitment-recommendations")
-
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-
-        self.assertEqual(len(data["underutilized_commitments"]), 1)
-        self.assertEqual(data["underutilized_commitments"][0]["id"], "comm-under-1")
-        self.assertGreater(data["underutilized_commitments"][0]["wasted_monthly"], 0)
-
-        self.assertEqual(len(data["expiring_soon"]), 1)
-        self.assertEqual(data["expiring_soon"][0]["id"], "comm-exp-1")
-        self.assertEqual(data["expiring_soon"][0]["action"], "Renew")
-
-    def test_get_commitment_recommendations_empty_returns_clean_portfolio(self):
-        fake_db = FakeOptimizerDB()
-        self.app.dependency_overrides[get_current_user] = lambda: ClerkUser(id="user-empty")
-        self.app.dependency_overrides[get_db_client] = lambda: fake_db
-
-        client = TestClient(self.app)
-        response = client.get("/api/commitment-recommendations")
-
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertEqual(data["recommendations"], [])
-        self.assertEqual(data["total_monthly_savings"], 0.0)
-        self.assertIn("No commitment recommendations", data["strategy_summary"])
+    async def select(self, table: str, filters: dict[str, str]) -> list[dict[str, object]]:
+        assert table == PURCHASE_SNAPSHOTS
+        assert filters["user_id"] == USER_ID
+        self.snapshot_reads.append(dict(filters))
+        if self.failure_on == "snapshots":
+            raise RuntimeError("secret database address")
+        return deepcopy([
+            row for row in self.rows
+            if all(row.get(key) == value for key, value in filters.items())
+        ])
 
 
-if __name__ == "__main__":
-    unittest.main()
+@pytest.fixture(autouse=True)
+def forbid_legacy_and_provider_calls(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    calls: list[Mock] = []
+    for method in ("get_resources", "get_daily_spend_history"):
+        guard = AsyncMock(side_effect=AssertionError(f"Unexpected legacy read: {method}"))
+        monkeypatch.setattr(FakeOptimizerDB, method, guard, raising=False)
+        calls.append(guard)
+    for method in ("get_commitments", "get_portfolio_snapshot"):
+        guard = AsyncMock(side_effect=AssertionError(f"Unexpected inventory read: {method}"))
+        monkeypatch.setattr(commitment_engine, method, guard)
+        calls.append(guard)
+    for method in ("analyze_usage_baselines", "generate_commitment_recommendations"):
+        guard = Mock(side_effect=AssertionError(f"Unexpected legacy optimizer: {method}"))
+        monkeypatch.setattr(commitment_optimizer, method, guard)
+        calls.append(guard)
+    guard = Mock(side_effect=AssertionError("GET must not fetch provider estimates"))
+    monkeypatch.setattr(commitment_recommendations, "fetch_aws_purchase_recommendations", guard)
+    calls.append(guard)
+    yield
+    for call in calls:
+        call.assert_not_called()
+
+
+@pytest.fixture
+def now() -> datetime:
+    return datetime.now(timezone.utc) - timedelta(minutes=1)
+
+
+@pytest.fixture
+def db() -> FakeOptimizerDB:
+    return FakeOptimizerDB()
+
+
+@pytest.fixture
+def app(db: FakeOptimizerDB) -> FastAPI:
+    application = FastAPI()
+    application.include_router(router)
+    application.include_router(finance_router)
+    application.dependency_overrides[get_current_user] = lambda: ClerkUser(id=USER_ID)
+    application.dependency_overrides[get_db_client] = lambda: db
+    return application
+
+
+@pytest.fixture
+def client(app: FastAPI) -> Iterator[TestClient]:
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def test_route_declares_canonical_response_model(app: FastAPI) -> None:
+    schema = app.openapi()["paths"][ROUTE]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    assert schema == {"$ref": "#/components/schemas/CommitmentRecommendationResult"}
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_ready_snapshot_matches_finance_without_summing_term_alternatives(
+    client: TestClient, db: FakeOptimizerDB, now: datetime, scoped: bool,
+) -> None:
+    db.rows = [snapshot(now)]
+    params = {"integration_id": INTEGRATION_ID} if scoped else {}
+    response = client.get(ROUTE, params=params)
+    finance = client.get(FINANCE_ROUTE, params=params)
+    assert response.status_code == finance.status_code == 200
+    payload = response.json()
+    assert payload == finance.json()
+    assert payload["status"] == "ready"
+    assert payload["pricing_basis"] == "live_api"
+    assert payload["source"] == SOURCE
+    assert payload["currency"] == "USD"
+    assert payload["fetched_at"] == payload["generated_at"] == now.isoformat()
+    assert payload["analysis_basis_days"] == 60
+    assert [row["term_years"] for row in payload["scenarios"]] == [1, 3]
+    assert [row["monthly_saving_usd"] for row in payload["scenarios"]] == [10, 25]
+    assert [row["annual_saving_usd"] for row in payload["scenarios"]] == [120, 300]
+    assert "total_monthly_savings" not in payload
+    assert "total_annual_savings" not in payload
+    assert payload["recommended_scenario"] is None
+    assert payload["safe_baseline_monthly_usd"] is None
+    assert payload["compute_fraction_pct"] is None
+    assert any("alternatives" in note for note in payload["important_notes"])
+    for option in payload["scenarios"]:
+        assert option["monthly_commitment_usd"] == 365
+        assert option["payment_option"] == "NO_UPFRONT"
+        assert option["over_commitment_risk_pct"] is None
+        assert option["effective_discount_pct"] is None
+        assert option["estimated_utilization_pct"] is None
+    assert db.integration_reads == [USER_ID, USER_ID]
+    assert db.snapshot_reads == [{"user_id": USER_ID, **params}] * 2
+
+
+@pytest.mark.parametrize("status", ["not_synced", "unavailable", "no_recommendations"])
+def test_nonready_snapshot_matches_finance_without_buy_signals(
+    client: TestClient, db: FakeOptimizerDB, now: datetime, status: str,
+) -> None:
+    if status != "not_synced":
+        row = snapshot(now)
+        row["status"] = status
+        if status == "no_recommendations":
+            row["scenarios"] = []
+        db.rows = [row]
+    response = client.get(ROUTE)
+    finance = client.get(FINANCE_ROUTE)
+    assert response.status_code == finance.status_code == 200
+    assert response.json() == finance.json()
+    payload = response.json()
+    assert payload["status"] == status
+    assert payload["scenarios"] == []
+    assert payload["pricing_basis"] is None
+    assert payload["recommended_scenario"] is None
+
+
+@pytest.mark.parametrize("field", ["fetched_at", "generated_at"])
+@pytest.mark.parametrize("age_hours", [72, -24, None])
+def test_stale_future_or_missing_timestamps_withhold_purchase_estimates(
+    client: TestClient, db: FakeOptimizerDB, now: datetime, field: str, age_hours: int | None,
+) -> None:
+    row = snapshot(now)
+    row[field] = (now - timedelta(hours=age_hours)).isoformat() if age_hours is not None else None
+    db.rows = [row]
+    response = client.get(ROUTE)
+    finance = client.get(FINANCE_ROUTE)
+    assert response.status_code == finance.status_code == 200
+    assert response.json() == finance.json()
+    assert response.json()["status"] == "stale"
+    assert response.json()["scenarios"] == []
+    assert response.json()["pricing_basis"] is None
+
+
+@pytest.mark.parametrize("provider", ["azure", "gcp"])
+@pytest.mark.parametrize("scoped", [False, True])
+def test_unsupported_provider_matches_finance_without_snapshot_reads(
+    client: TestClient, db: FakeOptimizerDB, provider: str, scoped: bool,
+) -> None:
+    db.integrations = [integration(provider=provider)]
+    params = {"integration_id": INTEGRATION_ID} if scoped else {}
+    response = client.get(ROUTE, params=params)
+    finance = client.get(FINANCE_ROUTE, params=params)
+    assert response.status_code == finance.status_code == 200
+    assert response.json() == finance.json()
+    assert response.json()["status"] == "unsupported"
+    assert response.json()["scenarios"] == []
+    assert db.snapshot_reads == []
+
+
+def test_empty_portfolio_matches_finance(client: TestClient, db: FakeOptimizerDB) -> None:
+    db.integrations = []
+    response = client.get(ROUTE)
+    finance = client.get(FINANCE_ROUTE)
+    assert response.status_code == finance.status_code == 200
+    assert response.json() == finance.json()
+    assert response.json()["status"] == "no_spend_data"
+    assert response.json()["scenarios"] == []
+    assert db.snapshot_reads == []
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_only_owned_active_snapshots_are_returned(
+    client: TestClient, db: FakeOptimizerDB, now: datetime, scoped: bool,
+) -> None:
+    db.integrations += [
+        integration("int-other"),
+        integration("int-inactive", status="inactive"),
+        integration("int-foreign", user_id="other-user"),
+    ]
+    db.rows = [
+        snapshot(now),
+        snapshot(now, integration_id="int-other", account_id="222222222222"),
+        snapshot(now, integration_id="int-inactive", account_id="333333333333"),
+        snapshot(now, integration_id="int-foreign", account_id="444444444444", user_id="other-user"),
+        snapshot(now, account_id="555555555555", user_id="other-user"),
+    ]
+    params = {"integration_id": INTEGRATION_ID} if scoped else {}
+    response = client.get(ROUTE, params=params)
+    assert response.status_code == 200
+    options = response.json()["scenarios"]
+    expected_ids = {INTEGRATION_ID} if scoped else {INTEGRATION_ID, "int-other"}
+    assert {row["integration_id"] for row in options} == expected_ids
+    assert {row["account_id"] for row in options} <= {ACCOUNT_ID, "222222222222"}
+    assert len(options) == 2 * len(expected_ids)
+    assert db.snapshot_reads == [{"user_id": USER_ID, **params}]
+
+
+@pytest.mark.parametrize("integration_id", ["missing", "int-foreign", "int-inactive"])
+def test_missing_foreign_or_inactive_integration_returns_404_before_snapshot_reads(
+    client: TestClient, db: FakeOptimizerDB, now: datetime, integration_id: str,
+) -> None:
+    db.integrations += [
+        integration("int-foreign", user_id="other-user"),
+        integration("int-inactive", status="inactive"),
+    ]
+    db.rows = [snapshot(now)]
+    params = {"integration_id": integration_id}
+    response = client.get(ROUTE, params=params)
+    finance = client.get(FINANCE_ROUTE, params=params)
+    assert response.status_code == finance.status_code == 404
+    assert response.json() == finance.json() == {"detail": "Integration not found"}
+    assert db.snapshot_reads == []
+
+
+@pytest.mark.parametrize("failure_on", ["integrations", "snapshots"])
+def test_database_failures_return_sanitized_503(
+    client: TestClient, db: FakeOptimizerDB, failure_on: str, caplog: pytest.LogCaptureFixture,
+) -> None:
+    db.failure_on = failure_on
+    response = client.get(ROUTE)
+    finance = client.get(FINANCE_ROUTE)
+    assert response.status_code == finance.status_code == 503
+    assert response.json() == finance.json() == {
+        "detail": "Commitment recommendations are temporarily unavailable",
+    }
+    assert "secret database address" not in response.text + caplog.text
+
+
+@pytest.mark.parametrize("headers", [
+    {},
+    {"Authorization": "Bearer malformed-token"},
+    {"x-cloudfinops-user-id": USER_ID},
+])
+def test_authentication_is_required_before_database_reads(
+    client: TestClient, app: FastAPI, db: FakeOptimizerDB, headers: dict[str, str],
+) -> None:
+    app.dependency_overrides.pop(get_current_user)
+    response = client.get(ROUTE, headers=headers)
+    assert response.status_code == 401
+    assert db.integration_reads == db.snapshot_reads == []
+
+
+@pytest.mark.parametrize("query", [
+    "coverage_target=75", "coverage_target=80", "coverage_target=0", "coverage_target=",
+    "max_term=1_year", "max_term=3_year", "max_term=", "max_term=invalid",
+    "payment_option=no_upfront", "payment_option=all_upfront", "payment_option=",
+    "coverage_target=80&max_term=3_year&payment_option=all_upfront",
+    "coverage_target=75&coverage_target=80",
+])
+def test_legacy_customization_is_rejected_before_reading_snapshots(
+    client: TestClient, db: FakeOptimizerDB, now: datetime, query: str,
+) -> None:
+    db.rows = [snapshot(now)]
+    response = client.get(f"{ROUTE}?integration_id={INTEGRATION_ID}&{query}")
+    assert response.status_code == 422
+    assert "unsupported" in response.json()["detail"].lower()
+    assert db.integration_reads == db.snapshot_reads == []
+
+
+@pytest.mark.parametrize("utilization", [0.0, None])
+def test_measured_zero_savings_remain_zero_without_invented_utilization(
+    client: TestClient, db: FakeOptimizerDB, now: datetime, utilization: float | None,
+) -> None:
+    row = snapshot(now)
+    options = row["scenarios"]
+    assert isinstance(options, list)
+    for option in options:
+        option.update(monthly_saving_usd=0, annual_saving_usd=0, estimated_utilization_pct=utilization)
+    db.rows = [row]
+    response = client.get(ROUTE)
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    for option in response.json()["scenarios"]:
+        assert option["monthly_saving_usd"] == option["annual_saving_usd"] == 0
+        assert option["estimated_utilization_pct"] == utilization
+
+
+@pytest.mark.parametrize("field,value", [
+    ("monthly_saving_usd", None),
+    ("account_id", "999999999999"),
+    ("integration_id", "int-foreign"),
+    ("generated_at", "invalid"),
+])
+def test_invalid_persisted_estimates_are_unavailable(
+    client: TestClient, db: FakeOptimizerDB, now: datetime, field: str, value: str | None,
+) -> None:
+    row = snapshot(now)
+    options = row["scenarios"]
+    assert isinstance(options, list)
+    options[0][field] = value
+    db.rows = [row]
+    response = client.get(ROUTE)
+    assert response.status_code == 200
+    assert response.json()["status"] == "unavailable"
+    assert response.json()["scenarios"] == []

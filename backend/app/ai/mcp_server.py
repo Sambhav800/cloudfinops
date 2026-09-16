@@ -15,9 +15,10 @@ from mcp.server.fastmcp import FastMCP
 from app.db import get_db_client
 from app.core.gpu_service import GpuService
 from app.core.multicloud_comparison import build_multicloud_report
+from app.core.commitment_recommendations import get_commitment_recommendation_result
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("mcp_server")
+logger = logging.getLogger(__name__)
 
 app = FastMCP("cloudfinops-core")
 
@@ -523,56 +524,15 @@ async def get_commitment_recommendations(user_id: str) -> dict:
     Committed Use Discounts). Use when asked about 'what RIs should I buy', 'savings plans',
     'commitment coverage', or 'how to reduce costs with commitments'.
     """
-    db = get_db_client()
-    stats = await db.select("dashboard_stats", filters={"user_id": user_id})
-    integrations = await db.select("cloud_integrations", filters={"user_id": user_id, "status": "active"})
-
-    total_spend = sum(float(s.get("total_spend", 0)) for s in stats)
-    providers = list(set(str(i.get("provider", "")).upper() for i in integrations if i.get("provider")))
-
-    recommendations = []
-    for provider in providers:
-        if provider == "AWS":
-            recommendations.append({
-                "provider": "AWS",
-                "type": "Compute Savings Plan",
-                "description": "1-year No Upfront Compute Savings Plan covers EC2, Fargate, and Lambda usage",
-                "estimated_savings_pct": "20-30%",
-                "commitment_term": "1 year",
-                "flexibility": "Instance family and size flexible across all regions",
-                "risk": "Low — covers any compute usage",
-            })
-        elif provider == "AZURE":
-            recommendations.append({
-                "provider": "Azure",
-                "type": "Azure Savings Plan for Compute",
-                "description": "1-year Azure Savings Plan covers VMs, App Service, and Container Instances",
-                "estimated_savings_pct": "20-30%",
-                "commitment_term": "1 year",
-                "flexibility": "Compute flexible across VM series and regions",
-                "risk": "Low — applies to any Azure compute",
-            })
-        elif provider == "GCP":
-            recommendations.append({
-                "provider": "GCP",
-                "type": "Committed Use Discount (CUD)",
-                "description": "1-year CUD for Compute Engine covers vCPU and memory at committed spend level",
-                "estimated_savings_pct": "20-57%",
-                "commitment_term": "1 or 3 years",
-                "flexibility": "Machine family flexible within same region",
-                "risk": "Medium — locked to machine family + region",
-            })
-
-    return {
-        "total_monthly_spend": round(total_spend, 2),
-        "connected_providers": providers,
-        "recommendations": recommendations,
-        "general_guidance": (
-            "Cover 50-60% of your stable baseline with 1-year commitments. "
-            "Leave variable workloads on on-demand or spot. "
-            "Review coverage quarterly as baselines shift."
-        ),
-    }
+    try:
+        result = await get_commitment_recommendation_result(db=get_db_client(), user_id=user_id)
+        payload = result.model_dump()
+        payload["recommendations"] = payload["scenarios"]
+        payload["guidance"] = "Use only these stored provider estimates. Do not invent discounts, coverage, risk probabilities, or purchase amounts. Options for the same account are alternatives."
+        return payload
+    except Exception as error:
+        logger.error("Commitment copilot data unavailable (%s)", type(error).__name__)
+        return {"status": "unavailable", "recommendations": [], "message": "Verified commitment estimates are unavailable; no purchase recommendation can be made."}
 
 
 @app.tool()

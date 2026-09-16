@@ -313,9 +313,9 @@ def build_forecast_summary(
 ) -> Dict[str, Any]:
     aggregated_history = aggregate_daily_spend_rows(history_rows)
     as_of_date = as_of or _utc_today()
-    currency = "USD"
+    currency = DISPLAY_CURRENCY
     if aggregated_history:
-        currency = str(aggregated_history[-1].get("currency") or "USD")
+        currency = str(aggregated_history[-1].get("currency") or DISPLAY_CURRENCY)
 
     current_month_rows = []
     for row in aggregated_history:

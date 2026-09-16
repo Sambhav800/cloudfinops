@@ -1,8 +1,15 @@
 import asyncio
+import sys
 from copy import deepcopy
-from types import SimpleNamespace
+from datetime import datetime, timezone
+from types import ModuleType, SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
+import pytest
+
+from app.api import routes
 from app.api.routes import run_scan
+from app.optimization.scan_integration import run_optimization_pipeline
 
 
 async def _noop_async(*args, **kwargs):
@@ -15,6 +22,7 @@ class FakeBatchSwapDB:
         self.bulk_upsert_calls = []
         self.delete_calls = []
         self.integration_updates = []
+        self.update_calls = []
         self.dashboard_stats = []
         self.scan_history_completed = []
         self.daily_spend_history_calls = []
@@ -58,6 +66,7 @@ class FakeBatchSwapDB:
         return True
 
     async def update(self, table, data, filters):
+        self.update_calls.append((table, deepcopy(data), deepcopy(filters)))
         return True
 
     async def update_integration(self, integration_id, user_id, data):
@@ -177,7 +186,8 @@ class FakeAzureWasteScanner:
         self.kwargs = kwargs
         self._scan_summary = {}
 
-    def scan_all(self):
+    def scan_all(self, billing_snapshot=None):
+        self._scan_summary = billing_snapshot or {}
         return [
             {
                 "provider": "azure",
@@ -314,6 +324,33 @@ def test_run_scan_stats_use_persisted_resource_count_after_db_canonicalization(m
 
 def test_run_scan_inserts_new_azure_batch_before_deleting_old_resources(monkeypatch):
     db = FakeBatchSwapDB()
+    db.get_dashboard_stats = AsyncMock(return_value=None)
+    refresh = ModuleType("app.core.azure_billing_refresh")
+    refresh.refresh_azure_billing = AsyncMock(return_value={
+        "resource_costs": {},
+        "subscription_costs": {"total": 140.0, "daily_totals": [], "by_service": {}, "currency": "USD"},
+        "billing": {
+            "status": "fresh",
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "period_start": datetime.now(timezone.utc).strftime("%Y-%m-01"),
+            "reason": None,
+            "retry_at": None,
+            "resource_costs_available": True,
+            "subscription_costs_available": True,
+            "daily_costs_available": True,
+        },
+    })
+    monkeypatch.setitem(sys.modules, "app.core.azure_billing_refresh", refresh)
+    monkeypatch.setattr("app.core.exchange_rates.get_exchange_rates", AsyncMock(return_value={"USD": 1.0}))
+    monkeypatch.setattr("app.optimization.scan_integration.run_optimization_pipeline", AsyncMock(return_value={}))
+    monkeypatch.setattr("app.governance.compliance_engine.ComplianceEngine.evaluate_and_save", AsyncMock())
+    for method in (
+        "_sync_commitments_after_scan", "_apply_catalog_estimates_for_scan",
+        "_apply_community_estimates_for_scan", "_contribute_community_prices_for_scan",
+        "generate_exclusion_suggestions",
+    ):
+        monkeypatch.setattr(f"app.api.routes.{method}", AsyncMock())
+    monkeypatch.setattr("app.api.routes.apply_exclusion_shields", AsyncMock(return_value=(0, 0)))
 
     monkeypatch.setattr(
         "app.api.routes.decrypt_integration_credentials",
@@ -347,7 +384,8 @@ def test_run_scan_inserts_new_azure_batch_before_deleting_old_resources(monkeypa
     assert sequence == ["bulk_upsert_resources", "delete_resources_for_integration"]
     assert all(resource["scan_batch_id"] == batch_id for resource in first_batch)
     assert db.delete_calls == [("user-1", "azure-integration", batch_id)]
-    assert db.integration_updates[0][2]["metadata"]["last_scan_batch_id"] == batch_id
+    integration_writes = [data for table, data, filters in db.update_calls if table == "cloud_integrations"]
+    assert integration_writes[-1]["metadata.last_scan_batch_id"] == batch_id
 
 
 def test_run_scan_keeps_existing_inventory_when_no_new_common_resources_are_found(monkeypatch):
@@ -421,3 +459,87 @@ def test_run_scan_normalizes_daily_history_before_persisting(monkeypatch):
         {"date": "2026-04-22", "amount": 5.1235},
     ]
     assert db.daily_spend_history_calls[0]["service_breakdown"] == {"EC2": 5.3333}
+
+
+@pytest.mark.parametrize("scanner_class,expected_spend,expected_count", [
+    (FakeAWSScanner, 140.0, 2),
+    (FakeEmptyAWSScanner, 0.0, 0),
+])
+def test_run_scan_persists_deterministic_stats_without_ai_or_azure_state(
+    monkeypatch: pytest.MonkeyPatch,
+    scanner_class: type[FakeAWSScanner],
+    expected_spend: float,
+    expected_count: int,
+) -> None:
+    db = FakeBatchSwapDB()
+    pipeline = AsyncMock(wraps=run_optimization_pipeline)
+    stats_adapter = Mock(wraps=routes._build_optimization_scan_stats)
+    legacy_ai = Mock(side_effect=AssertionError("Deterministic scans must not invoke AIAnalyzer"))
+    verifier = Mock(side_effect=AssertionError("These findings do not require AI verification"))
+    completed = AsyncMock()
+    failed = AsyncMock()
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        routes, "decrypt_integration_credentials",
+        lambda integration: {"access_key_id": "AKIA123", "secret_access_key": "secret"},
+    )
+    monkeypatch.setattr(routes, "AWSScanner", scanner_class)
+    monkeypatch.setattr(routes, "AIAnalyzer", legacy_ai)
+    monkeypatch.setattr(routes, "_build_optimization_scan_stats", stats_adapter)
+    monkeypatch.setattr("app.optimization.scan_integration.run_optimization_pipeline", pipeline)
+    monkeypatch.setattr("app.optimization.scan_integration.AIVerifier", verifier)
+    monkeypatch.setattr(routes, "send_scan_progress", _noop_async)
+    monkeypatch.setattr(routes, "send_scan_complete", completed)
+    monkeypatch.setattr(db, "fail_scan_history", failed)
+    monkeypatch.setattr("app.governance.generate_governance_policies", _noop_async)
+    for method in (
+        "_sync_commitments_after_scan", "_apply_catalog_estimates_for_scan",
+        "_apply_community_estimates_for_scan", "_contribute_community_prices_for_scan",
+        "generate_exclusion_suggestions",
+    ):
+        monkeypatch.setattr(routes, method, AsyncMock())
+    monkeypatch.setattr(routes, "apply_exclusion_shields", AsyncMock(return_value=(0, 0)))
+    integration = {
+        "id": "aws-integration", "provider": "aws", "name": "AWS Prod",
+        "metadata": {}, "regions": ["us-east-1"],
+    }
+
+    asyncio.run(run_scan(integration, "user-1", db))
+
+    failed.assert_not_called()
+    completed.assert_awaited_once_with("user-1", "aws-integration", expected_count)
+    legacy_ai.assert_not_called()
+    verifier.assert_not_called()
+    if expected_count:
+        pipeline.assert_awaited_once()
+        assert pipeline.call_args.kwargs["gemini_api_key"] is None
+        assert stats_adapter.call_count == 2
+        deterministic_result, findings = stats_adapter.call_args.args
+        assert deterministic_result["stats"]["total_resources"] == expected_count
+        assert len(deterministic_result["verdicts"]) == len(findings) == expected_count
+        assert {verdict.resource_id for verdict in deterministic_result["verdicts"]} == {
+            resource["cloud_resource_id"] for resource in findings
+        }
+        assert db.dashboard_stats[-1]["potential_savings"] == deterministic_result["potential_savings"]
+        assert db.dashboard_stats[-1]["ai_confidence_score"] == deterministic_result["ai_confidence_score"]
+    else:
+        pipeline.assert_not_called()
+        stats_adapter.assert_called_once()
+        assert db.bulk_upsert_calls == db.delete_calls == db.daily_spend_history_calls == []
+
+    # Neither missing utilization evidence nor empty inventory supports a savings claim.
+    assert len(db.dashboard_stats) == len(db.scan_history_completed) == 1
+    stats = db.dashboard_stats[0]
+    assert stats["user_id"] == "user-1"
+    assert stats["integration_id"] == "aws-integration"
+    assert stats["total_spend"] == expected_spend
+    assert stats["active_resources_count"] == expected_count
+    assert stats["potential_savings"] == stats["ai_confidence_score"] == stats["cost_of_inaction_6mo"] == 0
+    history = db.scan_history_completed[0]
+    assert history["total_resources"] == expected_count
+    assert history["waste_found"] == history["total_savings"] == 0
+    metadata = db.integration_updates[-1][2]["metadata"]
+    assert metadata["scan_status"] == "completed"
+    assert metadata["last_month_cost"] == expected_spend
+    assert metadata["resources_found"] == expected_count
+    assert metadata["potential_savings"] == 0
