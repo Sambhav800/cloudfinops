@@ -20,6 +20,7 @@ import { deleteCloudAccount } from "@/app/actions/accounts";
 import { useScan } from "@/components/dashboard/scan-provider";
 import { useNotifications } from "@/components/dashboard/notification-provider";
 import { formatInrCurrency } from "@/lib/resources/contract";
+import { IntegrationHealthPanel } from "@/components/dashboard/integration-health-panel";
 
 const emptySubscribe = () => () => { };
 const surfaceClassName = "bg-slate-900/50 backdrop-blur-xl border border-white/10 rounded-2xl";
@@ -692,6 +693,9 @@ export function SettingsView({
                                         ))
                                     )}
                                 </div>
+
+                                {/* Integration health panel — per-account telemetry */}
+                                <IntegrationHealthPanel getToken={() => getToken()} />
 
                             </div>
                         )}

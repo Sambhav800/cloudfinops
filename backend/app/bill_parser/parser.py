@@ -13,6 +13,7 @@ from typing import Any
 import pandas as pd
 
 from .cloudfront_analyzer import analyze_cloudfront_bill
+from .validator import validate_cloud_document
 from .gpu_analyzer import analyze_gpu_billing
 from .pdf_parser import parse_pdf_invoice
 
@@ -476,6 +477,16 @@ def parse_bill(content: bytes, filename: str) -> dict[str, Any]:
     df, source_metadata = _read_dataframe(content, filename)
     if df.empty:
         raise ValueError("Uploaded bill file is empty.")
+
+    # Domain validation: reject non-cloud documents (medical, legal, academic, etc.)
+    # Sample the first 200 cells of the dataframe header + values for fast screening
+    sample_text = " ".join(
+        str(v) for v in list(df.columns) + list(df.head(20).values.flat)
+        if v is not None and str(v).strip()
+    )[:8000]
+    domain_check = validate_cloud_document(sample_text)
+    if not domain_check.is_cloud_bill:
+        raise ValueError(domain_check.rejection_reason or "Not a cloud provider bill.")
 
     provider = _detect_provider(df, filename)
     if provider == "generic":

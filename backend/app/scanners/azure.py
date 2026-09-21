@@ -121,6 +121,12 @@ class AzureWasteScanner:
         self.subscription_id = subscription_id
         self.findings: List[Dict[str, Any]] = []
         self._exchange_rates = exchange_rates or {}
+        self._cost_rate_limited: bool = False
+        self._billing_status: str = "never"
+        self._billing_observed_at: Optional[str] = None
+        self._billing_last_success_at: Optional[str] = None
+        self._billing_retry_at: Optional[str] = None
+        self._billing_error: Optional[str] = None
         
         # Load configuration from environment with defaults
         self.CPU_THRESHOLD = float(os.getenv("ZOMBIE_CPU_THRESHOLD", "2.0"))
@@ -723,19 +729,40 @@ class AzureWasteScanner:
                 f"Fetched real costs for {len(cost_map)} resources "
                 f"from Azure Cost Management"
             )
+            now_iso = datetime.now(timezone.utc).isoformat()
+            self._billing_status = "ok"
+            self._billing_observed_at = now_iso
+            self._billing_last_success_at = now_iso
+            self._billing_retry_at = None
+            self._billing_error = None
             return cost_map
             
         except HttpResponseError as e:
             error_str = str(e)
             if "429" in error_str or "Too many requests" in error_str:
                 self._cost_rate_limited = True
+                self._billing_status = "rate_limited"
+                retry_seconds = 900.0
+                headers = getattr(getattr(e, "response", None), "headers", {}) or {}
+                ra_header = headers.get("Retry-After") or headers.get("retry-after")
+                if ra_header:
+                    try:
+                        retry_seconds = max(float(ra_header), 900.0)
+                    except (ValueError, TypeError):
+                        pass
+                self._billing_retry_at = (datetime.now(timezone.utc) + timedelta(seconds=retry_seconds)).isoformat()
+                self._billing_error = "Azure Cost Management rate limit reached"
                 logger.warning("Azure Cost Management rate-limited (429). Exact resource costs unavailable.")
             elif "AuthorizationFailed" in error_str or "403" in error_str:
+                self._billing_status = "failed"
+                self._billing_error = "Cost Management Reader role not granted"
                 logger.warning(
                     "Cost Management Reader role not granted. "
                     "Exact Azure resource costs unavailable."
                 )
             else:
+                self._billing_status = "failed"
+                self._billing_error = f"Azure Cost Management API error: {e}"
                 logger.warning(
                     f"Azure Cost Management API error: {e}. "
                     f"Exact Azure resource costs unavailable."
@@ -745,6 +772,12 @@ class AzureWasteScanner:
             error_str = str(e)
             if "429" in error_str or "Too many requests" in error_str:
                 self._cost_rate_limited = True
+                self._billing_status = "rate_limited"
+                self._billing_retry_at = (datetime.now(timezone.utc) + timedelta(seconds=900)).isoformat()
+                self._billing_error = "Azure Cost Management rate limit reached"
+            else:
+                self._billing_status = "failed"
+                self._billing_error = f"Error fetching costs: {e}"
             logger.warning(
                 f"Could not fetch real costs (falling back to "
                 f"billing-unavailable resource costs): {e}"
@@ -2388,7 +2421,13 @@ class AzureWasteScanner:
             ) else {},
             "has_real_costs": bool(
                 hasattr(self, '_real_costs') and self._real_costs
-            )
+            ),
+            "cost_rate_limited": getattr(self, '_cost_rate_limited', False),
+            "billing_status": getattr(self, '_billing_status', 'ok' if getattr(self, '_subscription_costs', None) else 'unavailable'),
+            "billing_observed_at": getattr(self, '_billing_observed_at', None),
+            "billing_last_success_at": getattr(self, '_billing_last_success_at', None),
+            "billing_retry_at": getattr(self, '_billing_retry_at', None),
+            "billing_error": getattr(self, '_billing_error', None),
         }
         
         return self.findings
