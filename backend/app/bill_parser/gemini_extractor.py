@@ -180,6 +180,14 @@ def _normalize_gemini_bill_payload(
     content_size: int,
     model_name: str,
 ) -> dict[str, Any] | None:
+    # Gemini may return {is_cloud_bill: false} for non-cloud documents
+    if payload.get("is_cloud_bill") is False:
+        rejection_reason = str(payload.get("rejection_reason") or "Non-cloud document").strip()[:300]
+        raise ValueError(
+            f"The uploaded document does not appear to be a cloud provider bill ({rejection_reason}). "
+            "Please upload a supported cloud billing document (AWS, Azure, GCP, etc.)."
+        )
+
     services = _normalize_services(
         payload.get("raw_services")
         or payload.get("services")
@@ -266,8 +274,24 @@ You are extracting a cloud provider bill for CloudFinOps.
 
 File name: {filename}
 
-Return only valid JSON with this exact shape:
+IMPORTANT — Domain check first:
+Before extracting, determine whether this file is a cloud provider bill, hosting invoice, or cloud usage export.
+If the document is ANY of the following, return ONLY this JSON and nothing else:
+  {{"is_cloud_bill": false, "rejection_reason": "<brief reason, e.g. medical report, academic transcript, legal document, retail receipt>"}}
+
+NOT cloud bills:
+- Medical / pathology / laboratory reports (blood tests, CBC, lipid panel, etc.)
+- Academic transcripts, grade cards, marksheets, syllabi
+- Legal documents, affidavits, court orders
+- Retail / e-commerce purchase receipts (Amazon shopping, Flipkart, etc.)
+- Bank statements not related to cloud billing
+- HR letters, salary slips, insurance documents
+
+Cloud bills include: AWS invoices, Azure cost exports, GCP billing exports, usage CSVs from cloud providers.
+
+If it IS a cloud bill, return only valid JSON with this exact shape:
 {{
+  "is_cloud_bill": true,
   "provider": "aws|azure|gcp|generic",
   "currency": "<3-letter ISO currency code as shown in the bill, e.g. USD, INR, EUR, GBP>",
   "billing_period": "string if visible",

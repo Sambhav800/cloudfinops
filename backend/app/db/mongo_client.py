@@ -194,6 +194,7 @@ class MongoDBClient:
 
             await ensure_index("scan_history", [("id", ASCENDING)], unique=True)
             await ensure_index("scan_history", [("user_id", ASCENDING), ("created_at", DESCENDING)])
+            await ensure_index("scan_history", [("user_id", ASCENDING), ("integration_id", ASCENDING), ("started_at", DESCENDING)])
 
             await ensure_index(
                 "dashboard_stats",
@@ -1352,6 +1353,114 @@ class MongoDBClient:
             return aggregated[-days:] if len(aggregated) > days else aggregated
         except Exception as error:
             logger.error("Failed to get daily spend history: %s", error)
+            return []
+
+    # =========================================================================
+    # INTEGRATION HEALTH (BATCH)
+    # =========================================================================
+
+    async def get_user_integrations_health_batch(
+        self,
+        user_id: str,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return health telemetry for ALL integrations owned by user_id.
+        Uses one aggregation per collection — not one query per integration.
+
+        Each row in the returned list has:
+            integration:       cloud_integrations doc
+            last_scan:         most-recent scan_history row (any status), or None
+            last_success_scan: most-recent completed scan_history row, or None
+            ai_counts:         {"queued", "running", "enriched", "failed",
+                                "last_success_at"}
+        """
+        try:
+            integrations = await self.select(
+                "cloud_integrations",
+                filters={"user_id": user_id},
+            )
+            if not integrations:
+                return []
+
+            integration_ids = [ig["id"] for ig in integrations if ig.get("id")]
+
+            # _collection() used directly: aggregation pipelines can't go through select()
+            scan_col = await self._collection("scan_history")
+            attempt_pipeline = [
+                {"$match": {"user_id": user_id, "integration_id": {"$in": integration_ids}}},
+                {"$sort": {"started_at": DESCENDING}},
+                {"$group": {
+                    "_id": "$integration_id",
+                    "status": {"$first": "$status"},
+                    "started_at": {"$first": "$started_at"},
+                    "completed_at": {"$first": "$completed_at"},
+                    "total_resources": {"$first": "$total_resources"},
+                    "error_message": {"$first": "$error_message"},
+                }},
+            ]
+            last_scan_by_id: Dict[str, Dict[str, Any]] = {}
+            async for doc in scan_col.aggregate(attempt_pipeline):
+                iid = str(doc.get("_id") or "")
+                if iid:
+                    last_scan_by_id[iid] = {k: v for k, v in doc.items() if k != "_id"}
+
+            # Most-recent *successful* scan per integration
+            success_pipeline = [
+                {"$match": {
+                    "user_id": user_id,
+                    "integration_id": {"$in": integration_ids},
+                    "status": "completed",
+                }},
+                {"$sort": {"completed_at": DESCENDING}},
+                {"$group": {
+                    "_id": "$integration_id",
+                    "completed_at": {"$first": "$completed_at"},
+                    "started_at": {"$first": "$started_at"},
+                    "total_resources": {"$first": "$total_resources"},
+                }},
+            ]
+            last_success_by_id: Dict[str, Dict[str, Any]] = {}
+            async for doc in scan_col.aggregate(success_pipeline):
+                iid = str(doc.get("_id") or "")
+                if iid:
+                    last_success_by_id[iid] = {k: v for k, v in doc.items() if k != "_id"}
+
+            # AI enrichment counts per integration
+            rec_col = await self._collection("recommendation_ledger")
+            ai_pipeline = [
+                {"$match": {"user_id": user_id, "integration_id": {"$in": integration_ids}}},
+                {"$group": {
+                    "_id": "$integration_id",
+                    "queued": {"$sum": {"$cond": [{"$eq": ["$ai_enrichment_status", "queued"]}, 1, 0]}},
+                    "running": {"$sum": {"$cond": [{"$eq": ["$ai_enrichment_status", "running"]}, 1, 0]}},
+                    "enriched": {"$sum": {"$cond": [
+                        {"$in": ["$ai_enrichment_status", ["enriched", "not_required"]]}, 1, 0,
+                    ]}},
+                    "failed": {"$sum": {"$cond": [{"$eq": ["$ai_enrichment_status", "failed"]}, 1, 0]}},
+                    "last_success_at": {"$max": "$ai_enriched_at"},
+                }},
+            ]
+            ai_by_id: Dict[str, Dict[str, Any]] = {}
+            async for doc in rec_col.aggregate(ai_pipeline):
+                iid = str(doc.get("_id") or "")
+                if iid:
+                    ai_by_id[iid] = {k: v for k, v in doc.items() if k != "_id"}
+
+            _empty_ai: Dict[str, Any] = {
+                "queued": 0, "running": 0, "enriched": 0, "failed": 0, "last_success_at": None,
+            }
+            return [
+                {
+                    "integration": ig,
+                    "last_scan": last_scan_by_id.get(ig.get("id") or ""),
+                    "last_success_scan": last_success_by_id.get(ig.get("id") or ""),
+                    "ai_counts": ai_by_id.get(ig.get("id") or "", _empty_ai),
+                }
+                for ig in integrations
+            ]
+
+        except Exception as error:
+            logger.error("get_user_integrations_health_batch failed: %s", error)
             return []
 
 

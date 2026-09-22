@@ -120,6 +120,12 @@ class AzureWasteScanner:
         self.subscription_id = subscription_id
         self.findings: List[Dict[str, Any]] = []
         self._exchange_rates = exchange_rates or {}
+        self._cost_rate_limited: bool = False
+        self._billing_status: str = "never"
+        self._billing_observed_at: Optional[str] = None
+        self._billing_last_success_at: Optional[str] = None
+        self._billing_retry_at: Optional[str] = None
+        self._billing_error: Optional[str] = None
         
         # Load configuration from environment with defaults
         self.CPU_THRESHOLD = float(os.getenv("ZOMBIE_CPU_THRESHOLD", "2.0"))
@@ -569,9 +575,28 @@ class AzureWasteScanner:
         """Fetch one bounded billing snapshot independently from inventory."""
         from .azure_billing import AzureBillingReader
 
-        return AzureBillingReader(
+        reader = AzureBillingReader(
             self.credential, self.subscription_id, self._billing_to_usd,
-        ).fetch()
+        )
+        snapshot = reader.fetch()
+        billing = snapshot.get("billing", {})
+        status = billing.get("status", "unavailable")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if status == "fresh":
+            self._billing_status = "ok"
+            self._billing_observed_at = billing.get("observed_at") or now_iso
+            self._billing_last_success_at = now_iso
+            self._billing_retry_at = None
+            self._billing_error = None
+        else:
+            reason = billing.get("reason") or status
+            self._billing_status = "rate_limited" if reason == "rate_limited" else "failed"
+            self._billing_observed_at = billing.get("observed_at")
+            self._billing_retry_at = billing.get("retry_at") or reader.retry_at
+            self._billing_error = reason
+            if reason == "rate_limited":
+                self._cost_rate_limited = True
+        return snapshot
 
     def _fetch_real_costs(self) -> Dict[str, Dict[str, Any]]:
         """Compatibility entry point; reuse a single snapshot on this scanner."""
@@ -2066,7 +2091,13 @@ class AzureWasteScanner:
             ) else {},
             "has_real_costs": bool(
                 hasattr(self, '_real_costs') and self._real_costs
-            )
+            ),
+            "cost_rate_limited": getattr(self, '_cost_rate_limited', False),
+            "billing_status": getattr(self, '_billing_status', 'ok' if getattr(self, '_subscription_costs', None) else 'unavailable'),
+            "billing_observed_at": getattr(self, '_billing_observed_at', None),
+            "billing_last_success_at": getattr(self, '_billing_last_success_at', None),
+            "billing_retry_at": getattr(self, '_billing_retry_at', None),
+            "billing_error": getattr(self, '_billing_error', None),
         }
         
         return self.findings

@@ -2559,10 +2559,31 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                     _azure_billing_available(billing, "subscription_costs_available")
                     and subscription_costs.get("total") is not None
                 )
-                total_spend = (
-                    subscription_costs["total"] if subscription_available
-                    else previous_stats.get("total_spend")
-                )
+
+                scan_summary = getattr(scanner, '_scan_summary', {})
+                cost_rate_limited = scan_summary.get("cost_rate_limited", False) or getattr(scanner, '_cost_rate_limited', False)
+                now_iso = datetime.now(timezone.utc).isoformat()
+                using_cached_costs = False
+
+                if subscription_available:
+                    total_spend = subscription_costs["total"]
+                    billing_status = "ok"
+                    billing_observed_at = now_iso
+                    billing_last_success_at = now_iso
+                    billing_retry_at = None
+                    billing_error = None
+                else:
+                    prev_spend = previous_stats.get("total_spend")
+                    if prev_spend is not None and float(prev_spend) > 0:
+                        total_spend = float(prev_spend)
+                        using_cached_costs = True
+                    else:
+                        total_spend = previous_stats.get("total_spend")
+                    billing_status = scan_summary.get("billing_status") or ("rate_limited" if cost_rate_limited else "unavailable")
+                    billing_observed_at = integration_metadata.get("billing_observed_at")
+                    billing_last_success_at = integration_metadata.get("billing_last_success_at")
+                    billing_retry_at = scan_summary.get("billing_retry_at")
+                    billing_error = scan_summary.get("billing_error")
 
                 opt_stats = opt_result.get("stats", {})
                 logger.info(
@@ -2749,6 +2770,13 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                     "inventory_assets_found": inventory_resource_count,
                     "waste_found": len(ai_stats.get("recommendations", [])),
                     "potential_savings": potential_savings,
+                    "using_cached_costs": using_cached_costs,
+                    "billing_status": billing_status or ("rate_limited" if cost_rate_limited else "unavailable" if not total_spend else "ok"),
+                    "billing_last_success_at": billing_last_success_at,
+                    "billing_last_attempt_at": now_iso,
+                    "billing_observed_at": billing_observed_at,
+                    "billing_retry_at": billing_retry_at,
+                    "billing_error": billing_error,
                 }
                 if subscription_available:
                     completed_metadata.update({
@@ -3224,6 +3252,11 @@ async def run_scan(integration: dict, user_id: str, db: MongoDBClient):
                     **integration_metadata,
                     "last_month_cost": final_total_spend,
                     "last_mtd_cost": final_total_spend,
+                    "billing_status": "ok" if final_total_spend > 0 else "unavailable",
+                    "billing_last_success_at": datetime.now(timezone.utc).isoformat() if final_total_spend > 0 else integration_metadata.get("billing_last_success_at"),
+                    "billing_last_attempt_at": datetime.now(timezone.utc).isoformat(),
+                    "billing_observed_at": datetime.now(timezone.utc).isoformat() if final_total_spend > 0 else integration_metadata.get("billing_observed_at"),
+                    "using_cached_costs": False,
                     "last_scan_batch_id": batch_id,
                     "scan_status": "completed",
                     "scan_error": None,
@@ -4491,6 +4524,7 @@ async def get_api_cost_per_request(
         raise HTTPException(status_code=500, detail="API cost analysis failed.")
 
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Commitment Optimizer
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5043,3 +5077,245 @@ async def public_bill_scan(
         redacted.get("waste_grade"),
     )
     return redacted
+
+
+# =============================================================================
+# INTEGRATION HEALTH ENDPOINT
+# =============================================================================
+
+# Allowlist maps raw scan error keywords → safe display message + reason_code
+_INVENTORY_ERROR_ALLOWLIST: list[tuple[str, str, str]] = [
+    # (substring_match, reason_code, display_message)
+    ("AuthorizationFailed", "permission_denied", "The connected account lacks required read permissions."),
+    ("AuthenticationFailed", "auth_failed", "Authentication failed. Please reconnect the integration."),
+    ("InvalidClientSecret", "auth_failed", "Authentication failed. Please reconnect the integration."),
+    ("does not have authorization", "permission_denied", "The connected account lacks required read permissions."),
+    ("subscription not found", "subscription_not_found", "Azure subscription not found or access was revoked."),
+    ("ResourceGroupNotFound", "resource_not_found", "Resource group not found. The account may have been reorganised."),
+    ("RequestThrottled", "rate_limited", "Cloud provider rate limit reached. Retry later."),
+    ("TooManyRequests", "rate_limited", "Cloud provider rate limit reached. Retry later."),
+    ("429", "rate_limited", "Cloud provider rate limit reached. Retry later."),
+    ("timed out", "timeout", "The scan timed out. It will be retried automatically."),
+    ("Scan timed out", "timeout", "The scan timed out. It will be retried automatically."),
+]
+
+
+def _safe_inventory_error(raw_error: str | None) -> tuple[str | None, str | None]:
+    """
+    Map a raw scan error message to a (reason_code, display_message) tuple.
+    Returns (None, None) if the raw message is empty/unknown.
+    NEVER returns raw SDK or credential details.
+    """
+    if not raw_error:
+        return None, None
+    for substring, code, msg in _INVENTORY_ERROR_ALLOWLIST:
+        if substring.lower() in raw_error.lower():
+            return code, msg
+    # Unknown error — safe generic message only, no raw details
+    return "scan_failed", "The last scan encountered an error. Please retry or reconnect the integration."
+
+
+_BILLING_STALE_THRESHOLD_HOURS = 6  # matches the existing 6-hour cache contract
+
+
+def _build_inventory_health(
+    last_scan: dict | None,
+    last_success_scan: dict | None,
+) -> dict:
+    """Derive InventoryHealth from scan_history rows."""
+    if last_scan is None:
+        return {
+            "last_success_at": None,
+            "last_attempt_at": None,
+            "data_observed_at": None,
+            "status": "never",
+            "reason_code": None,
+            "display_message": None,
+            "resource_count": 0,
+        }
+
+    attempt_at = last_scan.get("started_at")
+    success_at = (last_success_scan or {}).get("completed_at")
+    resource_count = int((last_success_scan or last_scan).get("total_resources") or 0)
+
+    scan_status = str(last_scan.get("status") or "").lower()
+    raw_error = str(last_scan.get("error_message") or "")
+
+    if scan_status == "completed":
+        status = "ok"
+        reason_code, display_message = None, None
+    elif scan_status == "failed":
+        status = "failed"
+        reason_code, display_message = _safe_inventory_error(raw_error)
+    elif scan_status == "running":
+        # Running scan — show last known success status until it finishes
+        status = "ok" if last_success_scan else "never"
+        reason_code, display_message = None, None
+    else:
+        status = "stale"
+        reason_code, display_message = None, None
+
+    return {
+        "last_success_at": success_at,
+        "last_attempt_at": attempt_at,
+        "data_observed_at": success_at,
+        "status": status,
+        "reason_code": reason_code,
+        "display_message": display_message,
+        "resource_count": resource_count,
+    }
+
+
+def _build_billing_health(integration_doc: dict) -> dict:
+    """
+    Derive BillingHealth from cloud_integrations.metadata.
+    Uses only persisted provider fields — never computes fake cooldowns.
+    """
+    meta: dict = integration_doc.get("metadata") or {}
+
+    # Azure persists authoritative billing health in metadata
+    billing_status = str(meta.get("billing_status") or "").lower()
+    observed_at = meta.get("billing_observed_at") or meta.get("last_billing_at")
+    retry_at = meta.get("billing_retry_at")
+    last_success = meta.get("billing_last_success_at") or observed_at
+    last_attempt = meta.get("billing_last_attempt_at") or last_success
+    using_cached = bool(meta.get("using_cached_costs") or meta.get("cost_cache_active"))
+
+    # Derive status from persisted field or fallback from integration last_scan
+    if billing_status == "rate_limited":
+        status = "failed"
+        reason_code = "rate_limited"
+        display_message = "Azure Cost Management rate limit reached. Billing will refresh when the cooldown expires."
+    elif billing_status == "failed":
+        status = "failed"
+        reason_code, display_message = _safe_inventory_error(
+            str(meta.get("billing_error") or "")
+        )
+    elif billing_status == "unavailable":
+        status = "failed"
+        reason_code = "billing_unavailable"
+        display_message = "Billing data is currently unavailable for this integration."
+    elif last_success:
+        # Check stale threshold (6-hour cache contract)
+        try:
+            age_hours = (
+                datetime.now(timezone.utc) - datetime.fromisoformat(last_success.replace("Z", "+00:00"))
+            ).total_seconds() / 3600
+            status = "stale" if age_hours > _BILLING_STALE_THRESHOLD_HOURS else "ok"
+        except Exception:
+            status = "ok"
+        reason_code, display_message = None, None
+    else:
+        status = "never"
+        reason_code, display_message = None, None
+
+    return {
+        "last_success_at": last_success,
+        "last_attempt_at": last_attempt,
+        "data_observed_at": observed_at,
+        "status": status,
+        "reason_code": reason_code,
+        "display_message": display_message,
+        "retry_at": retry_at,
+        "using_cached_costs": using_cached,
+    }
+
+
+class _AIEnrichmentHealthOut(BaseModel):
+    last_success_at: Optional[str] = None
+    queued: int = 0
+    running: int = 0
+    enriched: int = 0
+    failed: int = 0
+
+
+class _BillingHealthOut(BaseModel):
+    last_success_at: Optional[str] = None
+    last_attempt_at: Optional[str] = None
+    data_observed_at: Optional[str] = None
+    status: str
+    reason_code: Optional[str] = None
+    display_message: Optional[str] = None
+    retry_at: Optional[str] = None
+    using_cached_costs: bool = False
+
+
+class _InventoryHealthOut(BaseModel):
+    last_success_at: Optional[str] = None
+    last_attempt_at: Optional[str] = None
+    data_observed_at: Optional[str] = None
+    status: str
+    reason_code: Optional[str] = None
+    display_message: Optional[str] = None
+    resource_count: int = 0
+
+
+class _IntegrationHealthOut(BaseModel):
+    integration_id: str
+    provider: str
+    name: str
+    inventory: _InventoryHealthOut
+    billing: _BillingHealthOut
+    ai_enrichment: _AIEnrichmentHealthOut
+
+
+class _IntegrationHealthBatchOut(BaseModel):
+    integrations: List[_IntegrationHealthOut]
+    fetched_at: str
+
+
+@router.get("/integration-health", response_model=_IntegrationHealthBatchOut)
+@router.get("/integration-health/", response_model=_IntegrationHealthBatchOut, include_in_schema=False)
+async def get_integration_health_batch(
+    current_user: ClerkUser = Depends(get_current_user),
+    db: MongoDBClient = Depends(get_db_client),
+):
+    """
+    Batch integration health endpoint.
+
+    Returns inventory scan, billing refresh, and AI enrichment telemetry for
+    all of the authenticated user's connected integrations in a single call.
+
+    Rules enforced here:
+    - One DB round-trip per collection (not per integration).
+    - Uses persisted provider retry_at — no computed cooldowns.
+    - Error messages are allowlisted — raw SDK/credential details never returned.
+    - Billing stale threshold = 6 hours (existing cache contract).
+    - AI enrichment shows queued/running/enriched/failed counts.
+    - last_attempt_at, last_success_at, and data_observed_at are kept distinct.
+    """
+    user_id = getattr(current_user, "id", None) or getattr(current_user, "user_id", None) or str(current_user)
+
+    raw_rows = await db.get_user_integrations_health_batch(user_id)
+
+    integrations_out: list[_IntegrationHealthOut] = []
+    for row in raw_rows:
+        ig = row["integration"]
+        last_scan = row.get("last_scan")
+        last_success_scan = row.get("last_success_scan")
+        ai_counts = row.get("ai_counts") or {}
+
+        inventory = _build_inventory_health(last_scan, last_success_scan)
+        billing = _build_billing_health(ig)
+
+        integrations_out.append(
+            _IntegrationHealthOut(
+                integration_id=str(ig.get("id") or ""),
+                provider=str(ig.get("provider") or "unknown"),
+                name=str(ig.get("name") or ig.get("account_identifier") or "Unknown"),
+                inventory=_InventoryHealthOut(**inventory),
+                billing=_BillingHealthOut(**billing),
+                ai_enrichment=_AIEnrichmentHealthOut(
+                    last_success_at=ai_counts.get("last_success_at"),
+                    queued=int(ai_counts.get("queued") or 0),
+                    running=int(ai_counts.get("running") or 0),
+                    enriched=int(ai_counts.get("enriched") or 0),
+                    failed=int(ai_counts.get("failed") or 0),
+                ),
+            )
+        )
+
+    return _IntegrationHealthBatchOut(
+        integrations=integrations_out,
+        fetched_at=datetime.now(timezone.utc).isoformat(),
+    )
