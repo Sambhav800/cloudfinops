@@ -16,6 +16,12 @@ pitch-deck/
 /coverage
 .pytest_cache/
 
+# playwright
+/playwright-report/
+/test-results/
+/.auth/
+
+
 # next.js
 /.next/
 .next_prebuild_*/
