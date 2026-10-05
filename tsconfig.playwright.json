@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["@playwright/test"],
+    "moduleResolution": "node"
+  },
+  "include": [
+    "playwright.config.ts",
+    "src/**/__tests__/*.browser.spec.ts",
+    "src/app/test-harness/**/*.ts",
+    "src/app/test-harness/**/*.tsx"
+  ],
+  "exclude": ["node_modules"]
+}
