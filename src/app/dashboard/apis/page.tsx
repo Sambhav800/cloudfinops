@@ -4,8 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import {
-    AreaChart,
-    Area,
     BarChart,
     Bar,
     XAxis,
@@ -23,11 +21,9 @@ import {
     AlertTriangle,
     TrendingDown,
     ChevronDown,
-    ChevronUp,
     Terminal,
     Shield,
     Database,
-    Activity,
     Zap,
     Search,
     ArrowUpDown,
@@ -55,6 +51,7 @@ const CHART_COLORS = {
     ghost: "#ef4444",
     active: "#22c55e",
     shadow: "#a855f7",
+    unknown: "#94a3b8",
 } as const;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -65,10 +62,10 @@ type ApiResource = {
     api_type: string;
     stage_name: string;
     endpoint_type: string;
-    invocations_7d: number;
-    error_rate_4xx: number;
-    error_rate_5xx: number;
-    latency_p99_ms: number;
+    invocations_7d: number | null;
+    error_rate_4xx: number | null;
+    error_rate_5xx: number | null;
+    latency_p99_ms: number | null;
     cache_enabled: boolean;
     cache_hit_rate: number | null;
     monthly_cost: number;
@@ -118,6 +115,10 @@ type ApiReport = {
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function isMeasured(value: unknown): value is number {
+    return typeof value === "number" && Number.isFinite(value);
+}
 
 const fmt = (n: number) =>
     formatInrCurrency(toDisplayInrAmount(n, "USD"), { maximumFractionDigits: 0 });
@@ -171,13 +172,13 @@ function ExpandableCard({ children, title, defaultOpen = false }: { children: Re
 function TrafficDistributionChart({ resources }: { resources: ApiResource[] }) {
     const chartData = useMemo(() => {
         const sorted = [...resources]
-            .filter(r => r.invocations_7d > 0)
+            .filter((r): r is ApiResource & { invocations_7d: number } => isMeasured(r.invocations_7d) && r.invocations_7d > 0)
             .sort((a, b) => b.invocations_7d - a.invocations_7d)
             .slice(0, 8);
         return sorted.map(r => ({
             name: r.name.length > 20 ? r.name.slice(0, 18) + "…" : r.name,
             invocations: r.invocations_7d,
-            errors: Math.round(r.invocations_7d * (r.error_rate_5xx / 100)),
+            errors: isMeasured(r.error_rate_5xx) ? Math.round(r.invocations_7d * (r.error_rate_5xx / 100)) : null,
         }));
     }, [resources]);
 
@@ -220,7 +221,7 @@ function TrafficDistributionChart({ resources }: { resources: ApiResource[] }) {
                     <Tooltip
                         contentStyle={{ backgroundColor: CHART_STYLE.tooltipBg, border: `1px solid ${CHART_STYLE.tooltipBorder}`, borderRadius: "12px", fontSize: "12px" }}
                         labelStyle={{ color: "#94a3b8" }}
-                        formatter={(value: number, name: string) => [value.toLocaleString(), name === "invocations" ? "Invocations" : "5xx Errors"]}
+                        formatter={(value: unknown, name: string) => [isMeasured(value) ? value.toLocaleString() : "Not measured", name === "invocations" ? "Invocations" : "5xx Errors"]}
                     />
                     <Bar dataKey="invocations" radius={[4, 4, 0, 0]} fill={CHART_COLORS.invocations} fillOpacity={0.85} />
                     <Bar dataKey="errors" radius={[4, 4, 0, 0]} fill={CHART_COLORS.errors} fillOpacity={0.7} />
@@ -233,14 +234,16 @@ function TrafficDistributionChart({ resources }: { resources: ApiResource[] }) {
 function StatusBreakdownDonut({ resources }: { resources: ApiResource[] }) {
     const data = useMemo(() => {
         const ghost = resources.filter(r => r.is_ghost).length;
-        const active = resources.filter(r => !r.is_ghost && r.invocations_7d > 100).length;
-        const low = resources.filter(r => !r.is_ghost && r.invocations_7d <= 100 && r.invocations_7d > 0).length;
+        const active = resources.filter(r => !r.is_ghost && isMeasured(r.invocations_7d) && r.invocations_7d > 100).length;
+        const low = resources.filter(r => !r.is_ghost && isMeasured(r.invocations_7d) && r.invocations_7d <= 100 && r.invocations_7d > 0).length;
         const idle = resources.filter(r => !r.is_ghost && r.invocations_7d === 0).length;
+        const unknown = resources.filter(r => !r.is_ghost && !isMeasured(r.invocations_7d)).length;
         return [
             { name: "Active", value: active, color: CHART_COLORS.active },
             { name: "Low Traffic", value: low, color: CHART_COLORS.latency },
             { name: "Idle", value: idle, color: "#64748b" },
             { name: "Ghost", value: ghost, color: CHART_COLORS.ghost },
+            { name: "Unknown", value: unknown, color: CHART_COLORS.unknown },
         ].filter(d => d.value > 0);
     }, [resources]);
 
@@ -360,8 +363,8 @@ export default function ApiIntelligencePage() {
                     throw new Error(errPayload.detail || `HTTP ${r.status}`);
                 }
                 setReport(await r.json());
-            } catch (e: any) {
-                setError(e.message || String(e));
+            } catch (e: unknown) {
+                setError(e instanceof Error ? e.message || String(e) : String(e));
             } finally {
                 setLoading(false);
             }
@@ -371,15 +374,17 @@ export default function ApiIntelligencePage() {
 
     const filteredApis = useMemo(() => {
         if (!report) return [];
-        let filtered = report.api_resources.filter(r =>
+        const filtered = report.api_resources.filter(r =>
             r.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
             r.provider.toLowerCase().includes(searchQuery.toLowerCase()) ||
             r.api_type.toLowerCase().includes(searchQuery.toLowerCase())
         );
         filtered.sort((a, b) => {
-            const aVal = a[sortField] ?? 0;
-            const bVal = b[sortField] ?? 0;
-            return sortDir === "desc" ? (bVal as number) - (aVal as number) : (aVal as number) - (bVal as number);
+            const aVal = a[sortField];
+            const bVal = b[sortField];
+            if (!isMeasured(aVal)) return isMeasured(bVal) ? 1 : 0;
+            if (!isMeasured(bVal)) return -1;
+            return sortDir === "desc" ? bVal - aVal : aVal - bVal;
         });
         return filtered;
     }, [report, searchQuery, sortField, sortDir]);
@@ -691,9 +696,11 @@ export default function ApiIntelligencePage() {
                                             <span className="rounded-md bg-slate-800 px-2 py-0.5 text-xs text-slate-300">{r.api_type}</span>
                                         </td>
                                         <td className="px-5 py-4 text-xs font-medium text-slate-400 uppercase">{r.provider}</td>
-                                        <td className="px-5 py-4 font-mono text-slate-300">{r.invocations_7d.toLocaleString()}</td>
+                                        <td className="px-5 py-4 font-mono text-slate-300">{isMeasured(r.invocations_7d) ? r.invocations_7d.toLocaleString() : "Not measured"}</td>
                                         <td className="px-5 py-4">
-                                            {r.error_rate_5xx > 5 ? (
+                                            {!isMeasured(r.error_rate_5xx) ? (
+                                                <span className="text-xs text-slate-500">Not measured</span>
+                                            ) : r.error_rate_5xx > 5 ? (
                                                 <span className="rounded-full bg-rose-500/10 border border-rose-500/20 px-2 py-0.5 text-xs font-medium text-rose-300">
                                                     {r.error_rate_5xx.toFixed(1)}%
                                                 </span>
@@ -702,12 +709,16 @@ export default function ApiIntelligencePage() {
                                             )}
                                         </td>
                                         <td className="px-5 py-4 text-xs text-slate-400">
-                                            {r.latency_p99_ms > 0 ? `${r.latency_p99_ms.toFixed(0)}ms` : "—"}
+                                            {isMeasured(r.latency_p99_ms) ? `${r.latency_p99_ms.toFixed(0)}ms` : "Not measured"}
                                         </td>
                                         <td className="px-5 py-4">
                                             {r.is_ghost ? (
                                                 <span className="rounded-full bg-rose-500/10 border border-rose-500/30 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-rose-300">
                                                     Ghost
+                                                </span>
+                                            ) : !isMeasured(r.invocations_7d) ? (
+                                                <span className="rounded-full bg-slate-700/50 border border-slate-600/30 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                                                    Unknown
                                                 </span>
                                             ) : r.invocations_7d === 0 ? (
                                                 <span className="rounded-full bg-slate-700/50 border border-slate-600/30 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">

@@ -15,12 +15,11 @@ from ..auth import get_current_user, ClerkUser
 from ..db import get_db_client, MongoDBClient
 from ..ai.agent import CloudFinOpsAgent
 from ..core.agent_context import build_agent_system_prompt, _get_first_name
+from ..core.finance import _to_display_currency_amount
 
 logger = logging.getLogger(__name__)
 
 agent_router = APIRouter(prefix="/api/agent", tags=["AI Agent"])
-
-USD_TO_INR_RATE = 83.0
 
 
 class ChatRequest(BaseModel):
@@ -96,10 +95,7 @@ def _source_currency_for_provider(provider: str) -> str:
 
 
 def _to_display_inr(value: object, source_currency: str) -> float:
-    amount = _to_float(value)
-    if source_currency.upper() == "USD":
-        amount *= USD_TO_INR_RATE
-    return round(amount, 2)
+    return round(_to_display_currency_amount(value, source_currency), 2)
 
 
 def _format_inr(value: object) -> str:

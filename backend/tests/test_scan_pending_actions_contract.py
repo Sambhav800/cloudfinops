@@ -88,8 +88,8 @@ def test_clear_pending_notifications_for_integration_only_removes_matching_pendi
 
     assert deleted_count == 2
     assert fake_db.deleted_filters == [
-        {"id": "notif-a"},
-        {"id": "notif-c"},
+        {"id": "notif-a", "user_id": "user-1"},
+        {"id": "notif-c", "user_id": "user-1"},
     ]
 
 

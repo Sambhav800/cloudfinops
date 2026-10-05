@@ -18,7 +18,8 @@ import {
     EMPTY_SIMULATOR_SUMMARY,
     normalizeSimulationData,
 } from './simulator-normalizer';
-import { formatInrCurrency, toDisplayInrAmount } from '@/lib/resources/contract';
+import type { CloudCommitment, FinanceCommitmentsResponse } from '@/lib/api';
+import { formatCommitmentMoney, formatCommitmentPercent, formatSavingsPeriod } from '@/lib/commitments/presentation';
 
 const PROVIDER_COLORS = {
     aws: '#FF9900',
@@ -33,34 +34,8 @@ type ShiftLeftSimulatorProps = {
     mode?: 'terraform_plan' | 'commitment';
 };
 
-type CommitmentContext = {
-    id: string;
-    provider: string;
-    type: string;
-    name: string;
-    status: string;
-    start_date: string;
-    end_date: string;
-    commitment_amount: number;
-    currency: string;
-    region?: string | null;
-    utilization_pct: number;
-    savings_amount: number;
-    coverage_type: string;
-};
-
-type CommitmentsApiResponse = {
-    commitments?: CommitmentContext[];
-};
-
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function formatCurrency(value: number, currency = 'USD'): string {
-    return formatInrCurrency(toDisplayInrAmount(value, currency), {
-        maximumFractionDigits: 2,
-    });
 }
 
 function getRemainingMonths(endDate: string): string {
@@ -91,7 +66,7 @@ export function ShiftLeftSimulator(props: ShiftLeftSimulatorProps = {}) {
     const [simulationResult, setSimulationResult] = useState<SimulatorData | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState<'paste' | 'upload'>('paste');
-    const [commitmentData, setCommitmentData] = useState<CommitmentContext | null>(null);
+    const [commitmentData, setCommitmentData] = useState<CloudCommitment | null>(null);
     const [commitmentLoading, setCommitmentLoading] = useState(false);
     const [commitmentError, setCommitmentError] = useState<string | null>(null);
 
@@ -114,13 +89,13 @@ export function ShiftLeftSimulator(props: ShiftLeftSimulatorProps = {}) {
             try {
                 const response = await fetch('/api/finance/commitments', {
                     cache: 'no-store',
-                    signal: controller.signal,
+                    signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]),
                 });
                 if (!response.ok) {
                     throw new Error(`Commitments API returned ${response.status}`);
                 }
 
-                const payload = (await response.json()) as CommitmentsApiResponse;
+                const payload = (await response.json()) as FinanceCommitmentsResponse;
                 const match = payload.commitments?.find((item) => item.id === props.commitmentId) ?? null;
                 if (!match) {
                     throw new Error('Commitment was not found for this account.');
@@ -290,18 +265,19 @@ export function ShiftLeftSimulator(props: ShiftLeftSimulatorProps = {}) {
                                     </p>
                                 </div>
                                 <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-4">
-                                    <p className="text-xs text-slate-500">Amount</p>
+                                    <p className="text-xs text-slate-500">Monthly equivalent</p>
                                     <p className="mt-1 text-sm font-semibold text-white">
-                                        {formatCurrency(commitmentData.commitment_amount, commitmentData.currency)}
+                                        {formatCommitmentMoney(commitmentData.commitment_amount, commitmentData.currency)}
                                     </p>
                                     <p className="mt-1 text-xs text-slate-500">
-                                        Savings {formatCurrency(commitmentData.savings_amount, commitmentData.currency)}
+                                        Measured savings {formatCommitmentMoney(commitmentData.savings_amount, commitmentData.currency)}
                                     </p>
+                                    <p className="mt-1 text-xs text-slate-500">{formatSavingsPeriod(commitmentData.savings_period_start, commitmentData.savings_period_end)}</p>
                                 </div>
                                 <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-4">
                                     <p className="text-xs text-slate-500">Utilization</p>
                                     <p className="mt-1 text-sm font-semibold text-white">
-                                        {commitmentData.utilization_pct.toFixed(1)}%
+                                        {formatCommitmentPercent(commitmentData.utilization_pct)}
                                     </p>
                                     <p className="mt-1 text-xs text-slate-500">
                                         Remaining {getRemainingMonths(commitmentData.end_date)}

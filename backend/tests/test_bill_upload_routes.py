@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 import time
+from unittest.mock import AsyncMock
 
 from app.api.routes import _build_bill_analysis_record, router
 from app.auth import ClerkUser, get_current_user
@@ -289,6 +290,7 @@ def test_upload_bill_accepts_pdf_and_persists_analysis(monkeypatch):
     assert payload["filename"] == "invoice.pdf"
     assert payload["provider"] == "aws"
     assert payload["provider_detected"] == "AWS"
+    assert payload["currency"] == "USD"
     assert payload["source_format"] == "pdf"
     assert payload["rows_parsed"] == 3
     assert payload["total_analyzed_spend"] == 180.0
@@ -334,7 +336,7 @@ def test_upload_bill_uses_gemini_direct_extraction_when_parser_cannot_read_bill(
                 "line_items_detected": 24,
                 "gemini_direct_file": {
                     "status": "extracted",
-                    "model": "gemini-3-flash-preview",
+                    "model": "gemini-3.7-flash",
                     "service_rows_detected": 2,
                 },
             },
@@ -1074,22 +1076,33 @@ def test_get_latest_bill_analysis_reparses_archived_pdf_before_report_repair(mon
     assert fake_db.analyses[0]["rows_parsed"] == 383
 
 
-def test_upload_bill_maps_parser_value_error_to_422(monkeypatch):
-    client = _build_client(FakeBillAnalysisDB())
+@pytest.mark.parametrize(
+    "parser_detail",
+    [
+        "Could not extract readable text from this PDF invoice",
+        "Internal parser failure at /srv/private/invoices/customer-bill.pdf",
+        "",
+    ],
+    ids=["unreadable-pdf", "internal-detail", "empty-detail"],
+)
+def test_upload_bill_maps_parser_value_error_to_sanitized_422(monkeypatch, parser_detail: str):
+    fake_db = FakeBillAnalysisDB()
+    client = _build_client(fake_db)
 
     def _raise_value_error(content, filename):
-        raise ValueError("Could not extract readable text from this PDF invoice")
+        raise ValueError(parser_detail)
 
     monkeypatch.setattr("app.bill_parser.parse_bill", _raise_value_error)
 
-    async def _unused_fetch_cross_cloud_prices(**kwargs):
-        raise AssertionError("pricing lookup should not run when parsing fails")
+    pricing_lookup = AsyncMock(
+        side_effect=AssertionError("pricing lookup should not run when parsing fails")
+    )
+    arbitrage_analysis = AsyncMock(
+        side_effect=AssertionError("arbitrage analysis should not run when parsing fails")
+    )
 
-    async def _unused_analyze_arbitrage(**kwargs):
-        raise AssertionError("arbitrage analysis should not run when parsing fails")
-
-    monkeypatch.setattr("app.bill_parser.fetch_cross_cloud_prices", _unused_fetch_cross_cloud_prices)
-    monkeypatch.setattr("app.bill_parser.analyze_arbitrage", _unused_analyze_arbitrage)
+    monkeypatch.setattr("app.bill_parser.fetch_cross_cloud_prices", pricing_lookup)
+    monkeypatch.setattr("app.bill_parser.analyze_arbitrage", arbitrage_analysis)
 
     response = client.post(
         "/api/scan/upload-bill",
@@ -1097,7 +1110,13 @@ def test_upload_bill_maps_parser_value_error_to_422(monkeypatch):
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "Could not extract readable text from this PDF invoice"
+    assert response.json() == {"detail": "Invalid bill format or parameters."}
+    if parser_detail:
+        assert parser_detail not in response.text
+    pricing_lookup.assert_not_called()
+    arbitrage_analysis.assert_not_called()
+    assert fake_db.analyses == []
+    assert fake_db.user_features == []
 
 
 def test_upload_bill_returns_504_when_pdf_parser_stalls(monkeypatch):

@@ -18,6 +18,7 @@ import httpx
 from ..config import GEMINI_API_KEY, GEMINI_AGENT_MODEL
 from ..core.audit import log_audit_event
 from ..core.agent_context import build_agent_system_prompt
+from ..core.gemini_models import resolve_gemini_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +218,8 @@ class CloudFinOpsAgent:
 
     async def _call_gemini(self, contents: list, dynamic_tool_declarations: list, system_prompt: str):
         """Call Gemini REST API (non-streaming)."""
-        url = f"{GEMINI_API_BASE}/models/{GEMINI_AGENT_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        model_name = await resolve_gemini_model_name(GEMINI_AGENT_MODEL, api_key=GEMINI_API_KEY)
+        url = f"{GEMINI_API_BASE}/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
 
         payload = {
             "contents": contents,
@@ -251,7 +253,8 @@ class CloudFinOpsAgent:
 
     async def _stream_gemini(self, contents: list, dynamic_tool_declarations: list, system_prompt: str):
         """Call Gemini REST API (streaming)."""
-        url = f"{GEMINI_API_BASE}/models/{GEMINI_AGENT_MODEL}:streamGenerateContent?key={GEMINI_API_KEY}"
+        model_name = await resolve_gemini_model_name(GEMINI_AGENT_MODEL, api_key=GEMINI_API_KEY)
+        url = f"{GEMINI_API_BASE}/models/{model_name}:streamGenerateContent?key={GEMINI_API_KEY}"
 
         payload = {
             "contents": contents,
@@ -322,8 +325,8 @@ class CloudFinOpsAgent:
             async with stdio_client(server_params) as (mcp_read, mcp_write):
                 async with ClientSession(mcp_read, mcp_write) as mcp_session:
                     
-                    # 2. Handshake and fetch tools
-                    await mcp_session.initialize()
+                    # 2. Handshake and fetch tools (with timeout to prevent hanging)
+                    await asyncio.wait_for(mcp_session.initialize(), timeout=15.0)
                     mcp_tools_msg = await mcp_session.list_tools()
                     
                     # 3. Securely map schemas for Gemini
@@ -429,6 +432,16 @@ class CloudFinOpsAgent:
         except httpx.HTTPStatusError as e:
             logger.error(f"Gemini API error: {e.response.status_code} {e.response.text}")
             yield f"data: {json.dumps({'type': 'error', 'content': 'AI service error. Please try again.'})}\n\n"
-        except Exception as e:
-            logger.error(f"Agent MCP processing error: {e}", exc_info=True)
-            yield f"data: {json.dumps({'type': 'error', 'content': f'Internal tool error: {str(e)}'})}\n\n"
+        except asyncio.TimeoutError:
+            logger.error("MCP session initialization timed out")
+            yield f"data: {json.dumps({'type': 'error', 'content': 'Clousy tools took too long to start. Please try again.'})}\n\n"
+        except BaseException as e:
+            # anyio TaskGroup wraps MCP subprocess errors as ExceptionGroup (Python 3.11+)
+            root_cause = e
+            if hasattr(e, 'exceptions') and e.exceptions:
+                root_cause = e.exceptions[0]
+            logger.error(f"Agent MCP processing error: {root_cause}", exc_info=True)
+            if "TaskGroup" in str(e) or "ExceptionGroup" in type(e).__name__:
+                yield f"data: {json.dumps({'type': 'error', 'content': 'Clousy encountered a tool connection error. Please try again.'})}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'error', 'content': f'Internal error: {str(root_cause)}'})}\n\n"

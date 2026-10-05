@@ -7,6 +7,7 @@ cost-per-request efficiency ranking, and shadow API identification across AWS, A
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,16 @@ _API_SERVICE_KEYWORDS = (
     "api gateway", "api management", "cloud endpoints",
     "gcp api gateway", "apigee",
 )
+
+
+def _nonnegative_metric(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+        return number if math.isfinite(number) and number >= 0 else None
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _is_api_resource(resource: dict[str, Any]) -> bool:
@@ -135,10 +146,10 @@ class ApiIntelligenceService:
                 "api_type": meta.get("api_type", "REST"),
                 "stage_name": meta.get("stage_name", ""),
                 "endpoint_type": meta.get("endpoint_type", ""),
-                "invocations_7d": meta.get("invocations_7d", 0),
-                "error_rate_4xx": meta.get("error_rate_4xx", 0),
-                "error_rate_5xx": meta.get("error_rate_5xx", 0),
-                "latency_p99_ms": meta.get("latency_p99_ms", 0),
+                "invocations_7d": _nonnegative_metric(meta.get("invocations_7d")),
+                "error_rate_4xx": _nonnegative_metric(meta.get("error_rate_4xx")),
+                "error_rate_5xx": _nonnegative_metric(meta.get("error_rate_5xx")),
+                "latency_p99_ms": _nonnegative_metric(meta.get("latency_p99_ms")),
                 "cache_enabled": meta.get("cache_enabled", False),
                 "cache_hit_rate": meta.get("cache_hit_rate"),
                 "monthly_cost": float(r.get("cost") or 0),
@@ -179,15 +190,15 @@ class ApiIntelligenceService:
         ghosts = []
         for r in api_resources:
             meta = r.get("metadata") or {}
-            invocations = meta.get("invocations_7d", -1)
-            status = str(r.get("status") or "").lower()
+            invocations = _nonnegative_metric(meta.get("invocations_7d"))
+            if invocations is None:
+                continue
             monthly_cost = float(r.get("cost") or 0)
             provider = _detect_provider(r)
 
             is_ghost = (
                 invocations == 0
-                or status in ("zombie", "idle", "disabled")
-                or (invocations >= 0 and invocations < 10 and monthly_cost > 50)
+                or (invocations < 10 and monthly_cost > 50)
             )
 
             if is_ghost:
@@ -200,13 +211,11 @@ class ApiIntelligenceService:
                     "provider": provider,
                     "monthly_cost": monthly_cost,
                     "annual_cost": round(monthly_cost * 12, 2),
-                    "invocations_7d": invocations if invocations >= 0 else 0,
+                    "invocations_7d": invocations,
                     "ghost_reason": (
                         "Zero invocations in 7 days — API is completely idle."
                         if invocations == 0
                         else f"Only {invocations} invocations in 7 days — near-zero traffic."
-                        if invocations > 0
-                        else f"API status is {r.get('status')}."
                     ),
                     "fix_command": _build_fix_command(r, provider),
                 })
@@ -259,13 +268,14 @@ class ApiIntelligenceService:
             meta = r.get("metadata") or {}
             burst_limit = meta.get("throttle_burst_limit")
             rate_limit = meta.get("throttle_rate_limit")
-            invocations_7d = meta.get("invocations_7d", 0)
+            invocations_7d = _nonnegative_metric(meta.get("invocations_7d"))
 
-            if burst_limit is None or rate_limit is None:
+            if burst_limit is None or rate_limit is None or invocations_7d is None:
                 continue
 
             avg_daily = invocations_7d / 7 if invocations_7d > 0 else 0
             avg_per_second = avg_daily / 86400
+            error_rate_4xx = _nonnegative_metric(meta.get("error_rate_4xx"))
 
             # Over-provisioned: burst limit is 100x+ actual traffic
             if burst_limit > 100 and avg_per_second > 0 and burst_limit > avg_per_second * 100:
@@ -283,7 +293,7 @@ class ApiIntelligenceService:
                     ),
                 })
             # Under-provisioned: getting throttled (check 429s via error rates)
-            elif meta.get("error_rate_4xx", 0) > 10:
+            elif error_rate_4xx is not None and error_rate_4xx > 10:
                 issues.append({
                     "resource_id": r.get("id") or r.get("cloud_resource_id") or "",
                     "name": r.get("resource_name", "Unknown"),
@@ -305,9 +315,9 @@ class ApiIntelligenceService:
         for r in api_resources:
             meta = r.get("metadata") or {}
             monthly_cost = float(r.get("cost") or 0)
-            invocations_7d = meta.get("invocations_7d", 0)
+            invocations_7d = _nonnegative_metric(meta.get("invocations_7d"))
 
-            if invocations_7d <= 0 or monthly_cost <= 0:
+            if invocations_7d is None or invocations_7d <= 0 or monthly_cost <= 0:
                 continue
 
             monthly_invocations = (invocations_7d / 7) * 30

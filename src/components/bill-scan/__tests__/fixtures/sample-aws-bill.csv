@@ -1,0 +1,9 @@
+Service,Cost,Category
+Amazon EC2,4250.00,Compute
+Amazon RDS,2890.50,Database
+Amazon S3,1245.00,Storage
+Amazon CloudFront,980.75,Networking
+Elastic Load Balancing,1520.30,Networking
+Amazon DynamoDB,875.20,Database
+AWS Lambda,340.50,Compute
+NAT Gateway,745.25,Networking

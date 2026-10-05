@@ -20,7 +20,29 @@ test("audit-request route preserves the POST validation and response contract", 
     const source = await loadRouteSource();
 
     assert.match(source, /export async function POST/);
-    assert.match(source, /if \(!firstName \|\| !lastName \|\| !email\)/);
+    assert.match(source, /'firstName', 'First name', 80, true/);
+    assert.match(source, /'jobTitle', 'Job title', 120, true/);
+    assert.match(source, /At least one cloud provider is required\./);
     assert.match(source, /Please provide a valid email address\./);
+    assert.match(source, /Please provide a valid company website\./);
     assert.match(source, /Your audit request has been received!/);
+});
+
+test("audit-request route treats persistence and internal delivery as hard pipeline steps", async () => {
+    const source = await loadRouteSource();
+
+    assert.match(source, /lead_notification_status: 'pending'/);
+    assert.match(source, /thank_you_status: 'pending'/);
+    assert.match(source, /sendLeadNotificationEmail/);
+    assert.match(source, /delivery_failed/);
+    assert.doesNotMatch(source, /Promise\.allSettled/);
+    assert.doesNotMatch(source, /DB persistence is best-effort/);
+});
+
+test("audit-request route has basic public-form spam hardening", async () => {
+    const source = await loadRouteSource();
+
+    assert.match(source, /HONEYPOT_FIELD = 'website'/);
+    assert.match(source, /MIN_FORM_AGE_MS/);
+    assert.match(source, /shouldSilentlyAcceptSpam/);
 });

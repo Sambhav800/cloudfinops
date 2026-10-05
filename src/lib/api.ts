@@ -43,6 +43,78 @@ function normalizeArchitectureProvider(provider: string): ArchitectureProvider {
     throw new Error(`Invalid architecture provider: ${provider}`);
 }
 
+// --- Resource Exclusion Shield Types ---
+
+export type ExclusionReason = "seasonal" | "disaster_recovery" | "compliance" | "batch_processing" | "other";
+export type ExclusionType = "individual" | "rule";
+export type RuleMatchType = "tag" | "name_pattern" | "service_type" | "region";
+
+export type UsageSchedule = {
+    frequency: "quarterly" | "semi_annual" | "annual" | "custom";
+    description?: string | null;
+    next_expected_active?: string | null;
+};
+
+export type RuleMatch = {
+    match_type: RuleMatchType;
+    tag_key?: string | null;
+    tag_value?: string | null;
+    pattern?: string | null;
+    service_type?: string | null;
+    region?: string | null;
+};
+
+export type ResourceExclusion = {
+    id: string;
+    user_id: string;
+    type: ExclusionType;
+    cloud_resource_id: string | null;
+    integration_id: string | null;
+    resource_name: string | null;
+    provider: string | null;
+    rule_match: RuleMatch | null;
+    reason: ExclusionReason;
+    reason_note: string | null;
+    usage_schedule: UsageSchedule | null;
+    expires_at: string;
+    is_active: boolean;
+    is_expired?: boolean;
+    created_at: string;
+    updated_at: string | null;
+};
+
+export type ExclusionSuggestion = {
+    id: string;
+    user_id: string;
+    cloud_resource_id: string;
+    integration_id: string;
+    resource_name: string;
+    provider: string;
+    suggestion_type: "repeated_zombie" | "seasonal_pattern";
+    consecutive_zombie_scans: number;
+    suggested_reason: string;
+    suggested_schedule: UsageSchedule | null;
+    status: "pending" | "accepted" | "dismissed";
+    created_at: string;
+};
+
+export type ExclusionListResponse = {
+    exclusions: ResourceExclusion[];
+    count: number;
+};
+
+export type ExclusionSuggestionsResponse = {
+    suggestions: ExclusionSuggestion[];
+    count: number;
+};
+
+export type ExclusionStatsResponse = {
+    total_active: number;
+    rules_active: number;
+    expiring_soon: number;
+    pending_suggestions: number;
+};
+
 export type BackendIntegration = {
     id: string;
     provider: string;
@@ -130,24 +202,109 @@ export type FinanceSpendHistoryResponse = {
 
 export type CloudCommitment = {
     id: string;
+    integration_id: string | null;
     provider: string;
     type: string;
     name: string;
     status: string;
     start_date: string;
     end_date: string;
-    commitment_amount: number;
-    currency: string;
+    commitment_amount: number | null;
+    hourly_commitment: number | null;
+    amount_period: "monthly";
+    currency: string | null;
     region?: string | null;
-    utilization_pct: number;
-    savings_amount: number;
+    utilization_pct: number | null;
+    utilization_used_commitment?: number | null;
+    utilization_total_commitment?: number | null;
+    savings_amount: number | null;
+    savings_period_start: string | null;
+    savings_period_end: string | null;
+    source: string;
+    pricing_basis: "live_api" | null;
     coverage_type: string;
 };
+
+export interface CommitmentIntegrationStatus {
+    integration_id: string;
+    account_id?: string | null;
+    inventory_regions?: string[] | null;
+    provider: string;
+    status: string;
+    commitment_count: number;
+    last_success_at: string | null;
+    last_attempt_at: string | null;
+    error?: string | null;
+    error_code?: string | null;
+    recommendation_sync_status?: string | null;
+    stale?: boolean;
+    source?: "provider_api" | "demo";
+}
+
+export interface CommitmentSummary {
+    currency: string | null;
+    monthly_commitment: number | null;
+    measured_savings: number | null;
+    savings_period_start: string | null;
+    savings_period_end: string | null;
+    utilization_pct: number | null;
+    coverage_pct: null;
+    active_count: number;
+    measurement_status: "complete" | "partial" | "unavailable";
+}
 
 export type FinanceCommitmentsResponse = {
     commitments: CloudCommitment[];
     count: number;
+    integrations: CommitmentIntegrationStatus[];
+    summary: CommitmentSummary;
 };
+
+export interface CommitmentScenario {
+    label: string;
+    commitment_pct: null;
+    monthly_commitment_usd: number;
+    monthly_saving_usd: number;
+    annual_saving_usd: number;
+    effective_discount_pct: null;
+    provider_estimated_savings_pct: number | null;
+    over_commitment_risk_pct: null;
+    risk_level: "Unassessed";
+    term_years: 1 | 3;
+    hourly_commitment_usd: number;
+    estimated_utilization_pct: number | null;
+    integration_id: string;
+    account_id: string;
+    recommendation_id: string;
+    source: "aws_cost_explorer";
+    generated_at: string;
+    payment_option: "NO_UPFRONT";
+    savings_plans_type: "COMPUTE_SP";
+    lookback_days: 60;
+}
+
+export interface CommitmentRecommendationResponse {
+    status: "ready" | "not_synced" | "stale" | "unavailable" | "no_recommendations" | "unsupported" | "insufficient_history" | "no_spend_data";
+    source: "aws_cost_explorer";
+    pricing_basis: "live_api" | null;
+    fetched_at: string | null;
+    generated_at: string | null;
+    currency: "USD";
+    message?: string | null;
+    days_available?: number | null;
+    analysis_basis_days?: number | null;
+    avg_monthly_spend_usd?: number | null;
+    forecast_eom_spend_usd?: number | null;
+    forecast_method?: string | null;
+    forecast_stable?: boolean | null;
+    spend_volatility_pct?: number | null;
+    compute_fraction_pct?: number | null;
+    safe_baseline_monthly_usd?: number | null;
+    scenarios?: CommitmentScenario[];
+    recommended_scenario?: null;
+    important_notes?: string[];
+    aws_console_link?: string | null;
+}
 
 export type FinanceSettings = {
     portfolio_budget_limit?: number | null;
@@ -379,7 +536,7 @@ export type CreateAutomatedSyncIntegrationRequest = {
 };
 
 export type BackendStatsResponse = {
-    total_spend: number;
+    total_spend: number | null;
     potential_savings: number;
     active_resources_count: number;
     ai_confidence_score: number;
@@ -803,6 +960,22 @@ export async function triggerBackendScan(
 /**
  * Combined dashboard summary — all data in one call.
  */
+export interface DashboardMtdSpend {
+    amount: number | null;
+    currency: "INR";
+    status: "fresh" | "cached" | "stale" | "unavailable" | "known";
+    completeness: "complete" | "partial" | "unavailable";
+    observed_at: string | null;
+    period_start: string;
+    reason: string | null;
+    retry_at: string | null;
+    as_of?: string;
+}
+
+export interface DashboardProviderMtdSpend extends DashboardMtdSpend {
+    provider: string;
+}
+
 export interface DashboardSummaryResponse {
     stats: {
         total_spend: number;
@@ -819,6 +992,8 @@ export interface DashboardSummaryResponse {
     permission_alert: Record<string, unknown> | null;
     integrations: BackendIntegration[];
     integration_count: number;
+    provider_mtd_spend?: DashboardProviderMtdSpend[];
+    mtd_spend?: DashboardMtdSpend;
 }
 
 export async function getDashboardSummary(): Promise<DashboardSummaryResponse | null> {
@@ -952,8 +1127,13 @@ export async function getFinanceSettings(): Promise<FinanceSettings | null> {
 }
 
 export async function getCommitments(): Promise<CloudCommitment[]> {
-    const response = await getBackendJson<FinanceCommitmentsResponse>("/api/finance/commitments");
-    return response?.commitments ?? [];
+    try {
+        const response = await getBackendJson<FinanceCommitmentsResponse>("/api/finance/commitments");
+        if (!response) throw new Error("Commitment snapshot unavailable");
+        return response.commitments;
+    } catch (error) {
+        throw error instanceof Error ? error : new Error("Commitment snapshot unavailable");
+    }
 }
 
 export async function getFinanceBudgetEvents(limit = 10): Promise<FinanceBudgetEvent[]> {
@@ -1359,4 +1539,84 @@ export async function generateArchitectureReport(
     } catch (error) {
         return { error: { status: 500, detail: String(error) } };
     }
+}
+
+
+// --- Resource Exclusion Shield API ---
+
+export async function getExclusions(
+    filters?: { type?: string; reason?: string; is_active?: boolean },
+): Promise<ExclusionListResponse | null> {
+    const query: Record<string, BackendQueryValue> = {};
+    if (filters?.type) query.type = filters.type;
+    if (filters?.reason) query.reason = filters.reason;
+    if (filters?.is_active !== undefined) query.is_active = String(filters.is_active);
+    return getBackendJson<ExclusionListResponse>("/api/exclusions", query);
+}
+
+export async function getExclusionStats(): Promise<ExclusionStatsResponse | null> {
+    return getBackendJson<ExclusionStatsResponse>("/api/exclusions/stats");
+}
+
+export async function getExclusionSuggestions(): Promise<ExclusionSuggestionsResponse | null> {
+    return getBackendJson<ExclusionSuggestionsResponse>("/api/exclusions/suggestions");
+}
+
+export async function createExclusion(payload: {
+    cloud_resource_id: string;
+    integration_id: string;
+    resource_name?: string;
+    provider?: string;
+    reason: string;
+    reason_note?: string;
+    usage_schedule?: UsageSchedule;
+    expires_in_days?: number;
+}) {
+    return postBackendJson<{ status: string; exclusion: ResourceExclusion }>(
+        "/api/exclusions",
+        payload as Record<string, unknown>,
+    );
+}
+
+export async function createRuleExclusion(payload: {
+    rule_match: RuleMatch;
+    reason: string;
+    reason_note?: string;
+    usage_schedule?: UsageSchedule;
+    expires_in_days?: number;
+}) {
+    return postBackendJson<{ status: string; exclusion: ResourceExclusion }>(
+        "/api/exclusions/rule",
+        payload as Record<string, unknown>,
+    );
+}
+
+export async function deleteExclusion(exclusionId: string) {
+    return deleteBackendJson(`/api/exclusions/${exclusionId}`);
+}
+
+export async function acceptExclusionSuggestion(
+    suggestionId: string,
+    payload: {
+        cloud_resource_id: string;
+        integration_id: string;
+        resource_name?: string;
+        provider?: string;
+        reason: string;
+        reason_note?: string;
+        usage_schedule?: UsageSchedule;
+        expires_in_days?: number;
+    },
+) {
+    return postBackendJson<{ status: string; exclusion: ResourceExclusion }>(
+        `/api/exclusions/suggestions/${suggestionId}/accept`,
+        payload as Record<string, unknown>,
+    );
+}
+
+export async function dismissExclusionSuggestion(suggestionId: string) {
+    return postBackendJson<{ status: string }>(
+        `/api/exclusions/suggestions/${suggestionId}/dismiss`,
+        {},
+    );
 }

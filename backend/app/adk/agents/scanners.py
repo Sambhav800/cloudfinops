@@ -5,14 +5,18 @@ Three specialized scanner agents run concurrently to scan AWS, Azure, and GCP.
 from google.adk import Agent
 from google.adk.agents.parallel_agent import ParallelAgent
 
+from ...config import DEFAULT_GEMINI_FLASH_MODEL, GEMINI_AGENT_MODEL
+from ...core.gemini_models import is_gemini_auto_model
 from ..tools.aws_tools import scan_aws_ec2, scan_aws_ebs_volumes, get_aws_cost_breakdown
 from ..tools.azure_tools import scan_azure_vms, scan_azure_disks, get_azure_costs
 from ..tools.gcp_tools import scan_gcp_instances, scan_gcp_disks, get_gcp_costs
 from ..tools.safety_tools import save_finding_to_state
 
+_ADK_MODEL = DEFAULT_GEMINI_FLASH_MODEL if is_gemini_auto_model(GEMINI_AGENT_MODEL) else GEMINI_AGENT_MODEL
+
 aws_scanner_agent = Agent(
     name="AWS_Scanner",
-    model="gemini-3.5-flash",
+    model=_ADK_MODEL,
     instruction="""You are the AWS Scanner Agent. Your mission is to scan AWS infrastructure and identify cost waste.
 
 EXECUTION PLAN:
@@ -39,7 +43,7 @@ If no issues found, explicitly state "No waste detected in AWS."
 
 azure_scanner_agent = Agent(
     name="Azure_Scanner",
-    model="gemini-3.5-flash",
+    model=_ADK_MODEL,
     instruction="""You are the Azure Scanner Agent. Your mission is to scan Azure infrastructure for cost waste.
 
 EXECUTION PLAN:
@@ -65,7 +69,7 @@ If no issues, state "No waste detected in Azure."
 
 gcp_scanner_agent = Agent(
     name="GCP_Scanner",
-    model="gemini-3.5-flash",
+    model=_ADK_MODEL,
     instruction="""You are the GCP Scanner Agent. Your mission is to scan Google Cloud for cost waste.
 
 EXECUTION PLAN:

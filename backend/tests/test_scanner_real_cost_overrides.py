@@ -828,7 +828,8 @@ def test_dashboard_resource_count_excludes_no_direct_charge_inventory():
     assert _count_dashboard_resources(rows) == 3
 
 
-def test_daily_spend_aggregation_converts_provider_rows_to_display_inr():
+def test_daily_spend_aggregation_converts_provider_rows_to_display_inr(monkeypatch):
+    monkeypatch.setattr("app.core.finance.DEFAULT_USD_TO_INR_RATE", 83.0)
     rows = [
         {
             "spend_date": "2026-04-01",
@@ -925,36 +926,46 @@ def test_azure_subscription_cost_uses_mtd_period_and_usd_normalized_currency():
     scanner = AzureWasteScanner.__new__(AzureWasteScanner)
     scanner.credential = object()
     scanner.subscription_id = "sub"
+    scanner._exchange_rates = {"INR": 0.012}
     calls = []
 
     class FakeResult:
-        def __init__(self, rows):
+        def __init__(self, rows, dimension):
             self.rows = rows
+            self.columns = [SimpleNamespace(name=name) for name in ["Cost", "UsageDate", dimension, "Currency"]]
+            self.next_link = None
 
     class FakeQuery:
-        def usage(self, *, scope, parameters):
+        def usage(self, *, scope, parameters, **kwargs):
             calls.append((scope, parameters))
-            if parameters["dataset"]["granularity"] == "Daily":
-                return FakeResult([[97.0, "20260428", "INR"]])
-            return FakeResult([[97.0, "Virtual Machines", "INR"]])
+            dimension = parameters.dataset.grouping[0].name
+            today = date.today().strftime("%Y%m%d")
+            return FakeResult([[97.0, today, "Virtual Machines", "INR"]], dimension)
 
     class FakeCostManagementClient:
         def __init__(self, **_kwargs):
             self.query = FakeQuery()
 
-    scanner._azure_call = lambda _operation_name, func: func()
+        def close(self):
+            return None
 
-    with patch("azure.mgmt.costmanagement.CostManagementClient", FakeCostManagementClient):
+    with (
+        patch("app.scanners.azure_billing.CostManagementClient", FakeCostManagementClient),
+        patch("app.scanners.azure_billing.time.sleep"),
+    ):
         summary = scanner._fetch_subscription_cost_by_service()
 
     assert summary["total"] == 1.16
     assert summary["currency"] == "USD"
     assert summary["original_currency"] == "INR"
     assert summary["period"] == "current_month_to_date"
-    assert summary["daily_totals"] == [{"date": "2026-04-28", "amount": 1.16}]
-    assert summary["by_service"] == {"Virtual Machines": 1.16}
-    assert calls[0][1]["time_period"]["from"].endswith("-01T00:00:00Z")
-    assert calls[1][1]["time_period"]["from"].endswith("-01T00:00:00Z")
+    assert summary["daily_totals"][-1] == {
+        "date": date.today().isoformat(), "amount": 1.164,
+        "service_breakdown": {"Virtual Machines": 1.164},
+    }
+    assert summary["by_service"] == {"Virtual Machines": 1.164}
+    assert calls[0][1].time_period.from_property.day == 1
+    assert calls[1][1].time_period.from_property.day == 1
 
 
 def test_azure_generic_resources_prefers_resource_graph_inventory_for_unseen_resources():

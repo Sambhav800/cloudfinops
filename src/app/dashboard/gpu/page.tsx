@@ -231,6 +231,15 @@ export default function GpuIntelligencePage() {
                 const data = await workloadsResp.value.json();
                 setWorkloads(data.workloads || []);
             }
+
+            // Fetch metrics history for trends chart
+            try {
+                const metricsResp = await fetch("/api/gpu/metrics-history", { headers });
+                if (metricsResp.ok) {
+                    const metricsData = await metricsResp.json();
+                    setMetricsHistory(metricsData.history || []);
+                }
+            } catch {}
         };
 
         void fetchSecondary();
@@ -361,7 +370,7 @@ export default function GpuIntelligencePage() {
                 <GpuUtilizationChart
                     wsUrl={typeof window !== "undefined" ? `ws://${window.location.hostname}:8000` : ""}
                     userId={userId || ""}
-                    token=""
+                    token={userId || ""}
                 />
                 <GpuCostForecast forecast={forecast} />
             </div>

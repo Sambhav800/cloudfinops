@@ -4,6 +4,7 @@ import { useActionState, useEffect, useState } from 'react';
 import { connectCloudAccount } from '@/app/actions/cloud';
 import { Loader2, AlertCircle, CheckCircle, Key, Shield, Cloud } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import { useScan } from '@/components/dashboard/scan-provider';
 
 type Provider = 'aws' | 'azure' | 'gcp';
 type AwsAuthType = 'role' | 'keys';
@@ -14,6 +15,7 @@ export function ConnectCloudForm({ onCancel }: { onCancel: () => void }) {
     const [provider, setProvider] = useState<Provider>('aws');
     const [awsAuthType, setAwsAuthType] = useState<AwsAuthType>('keys');
     const router = useRouter();
+    const { showScanProgress } = useScan();
 
     useEffect(() => {
         if (state?.provider) {
@@ -21,16 +23,17 @@ export function ConnectCloudForm({ onCancel }: { onCancel: () => void }) {
         }
     }, [state?.provider]);
 
-    // Close modal on success
+    // On success: close modal and show scan progress popup
     useEffect(() => {
         if (state?.success) {
             const timer = setTimeout(() => {
                 onCancel();
                 router.refresh();
-            }, 1500);
+                showScanProgress();
+            }, 500);
             return () => clearTimeout(timer);
         }
-    }, [state, onCancel, router]);
+    }, [state, onCancel, router, showScanProgress]);
 
     return (
         <form action={formAction} className="space-y-4 text-left">

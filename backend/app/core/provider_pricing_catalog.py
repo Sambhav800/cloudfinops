@@ -205,6 +205,15 @@ class ProviderPricingCatalog:
                     skipped_actual += 1
                     continue
 
+                # Don't estimate cost for resources where the scanner already
+                # queried Azure/AWS Cost Management and found no billing data.
+                # If the provider's billing API says $0, the resource genuinely
+                # costs $0 (e.g. deallocated VMs, free-tier network resources).
+                # Applying list-price estimates here would inflate totals.
+                if cost_source == "billing_unavailable":
+                    skipped_actual += 1
+                    continue
+
                 estimate = await self.estimate_resource_monthly_cost(db, resource)
                 if estimate is None:
                     unmatched += 1

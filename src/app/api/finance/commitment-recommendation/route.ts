@@ -31,22 +31,26 @@ export async function GET(request: NextRequest) {
         const response = await fetchWithBackendAuthFallback(fetch, targetUrl, {
             method: "GET",
             cache: "no-store",
+            signal: AbortSignal.timeout(15_000),
         }, authContext);
 
-        const data = await response.json().catch(() => ({}));
+        const data: unknown = await response.json().catch(() => null);
         if (!response.ok) {
             return NextResponse.json(
-                { detail: data?.detail || "Failed to load commitment recommendation" },
+                data ?? { detail: "Failed to load commitment recommendation" },
                 { status: response.status },
             );
         }
 
-        return NextResponse.json(data);
+        if (data === null) {
+            return NextResponse.json({ detail: "Optimizer service returned invalid JSON" }, { status: 502 });
+        }
+        return NextResponse.json(data, { headers: { "Cache-Control": "no-store" } });
     } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown optimizer error";
+        const timedOut = error instanceof Error && error.name === "TimeoutError";
         return NextResponse.json(
-            { detail: `Could not reach the optimizer service: ${message}` },
-            { status: 503 },
+            { detail: timedOut ? "Optimizer service timed out" : "Could not reach the optimizer service" },
+            { status: timedOut ? 504 : 503 },
         );
     }
 }

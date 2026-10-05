@@ -1,4 +1,8 @@
 import asyncio
+from copy import deepcopy
+from unittest.mock import AsyncMock
+
+import pytest
 
 from app.core.provider_pricing_catalog import (
     CATALOG_COST_SOURCE,
@@ -199,20 +203,33 @@ def test_catalog_estimate_applies_only_to_non_actual_zero_cost_resources():
                 "service_type": "AWS EC2 Instance",
                 "region": "us-east-1",
                 "cost": 0,
-                "metadata": {"instance_type": "t3.micro", "cost_source": "billing_unavailable"},
+                "metadata": {"instance_type": "t3.micro", "cost_source": "pricing_unavailable"},
             },
         ],
     )
+
+    db.resources.extend([
+        {**db.resources[1], "user_id": "user-other"},
+        {**db.resources[1], "id": "res-other-integration", "integration_id": "int-other"},
+    ])
 
     result = asyncio.run(catalog.apply_catalog_estimates(db, "user-1", integration_id="int-1"))
 
     assert result["updated"] == 1
     assert result["skipped_actual"] == 1
+    assert result["processed"] == 2
+    assert result["unmatched"] == 0
+    assert len(db.updates) == 1
     assert db.updates[0][0] == "resources"
     assert db.updates[0][1]["cost"] == 14.6
     assert db.updates[0][1]["metadata"]["cost_source"] == CATALOG_COST_SOURCE
     assert db.updates[0][1]["metadata"]["cost_basis"] == "provider_market_list_price"
     assert db.updates[0][1]["metadata"]["pricing_source"] == "provider_catalog"
+    assert db.updates[0][1]["metadata"]["catalog_price_id"] == "price-1"
+    assert db.updates[0][1]["metadata"]["catalog_key"] == "aws:ec2:t3micro"
+    assert db.updates[0][1]["metadata"]["catalog_unit"] == "Hrs"
+    assert db.updates[0][1]["metadata"]["catalog_unit_price"] == 0.02
+    assert db.updates[0][1]["metadata"]["catalog_quantity"] == 730.0
     assert db.updates[0][1]["metadata"]["currency"] == "USD"
     assert db.updates[0][1]["metadata"]["actual_billing_required"] is True
     assert db.updates[0][2] == {"user_id": "user-1", "id": "res-estimate"}
@@ -250,7 +267,7 @@ def test_aws_catalog_estimate_uses_metadata_region_when_resource_region_is_globa
                 "metadata": {
                     "aws_region": "us-east-1",
                     "instance_type": "t3.micro",
-                    "cost_source": "billing_unavailable",
+                    "cost_source": "pricing_unavailable",
                 },
             },
         ],
@@ -290,7 +307,7 @@ def test_gcp_disk_catalog_estimate_accepts_giby_month_unit():
                 "service_type": "GCP Persistent Disk",
                 "region": "us-central1-a",
                 "cost": 0,
-                "metadata": {"size_gb": 100, "type": "pd-balanced", "cost_source": "billing_unavailable"},
+                "metadata": {"size_gb": 100, "type": "pd-balanced", "cost_source": "pricing_unavailable"},
             }
         ],
     )
@@ -355,7 +372,7 @@ def test_gcp_disk_catalog_estimate_matches_official_pd_capacity_descriptions():
                 "service_type": "GCP Persistent Disk",
                 "region": "us-central1-a",
                 "cost": 0,
-                "metadata": {"size_gb": 30, "type": "pd-balanced", "cost_source": "billing_unavailable"},
+                "metadata": {"size_gb": 30, "type": "pd-balanced", "cost_source": "pricing_unavailable"},
             },
             {
                 "id": "ssd-disk",
@@ -366,7 +383,7 @@ def test_gcp_disk_catalog_estimate_matches_official_pd_capacity_descriptions():
                 "service_type": "GCP Persistent Disk",
                 "region": "us-central1-a",
                 "cost": 0,
-                "metadata": {"size_gb": 100, "type": "pd-ssd", "cost_source": "billing_unavailable"},
+                "metadata": {"size_gb": 100, "type": "pd-ssd", "cost_source": "pricing_unavailable"},
             },
         ],
     )
@@ -422,7 +439,7 @@ def test_gcp_compute_catalog_estimate_combines_cpu_and_ram_prices():
                 "service_type": "GCP Compute Instance",
                 "region": "us-central1-a",
                 "cost": 0,
-                "metadata": {"machine_type": "e2-standard-2", "cost_source": "billing_unavailable"},
+                "metadata": {"machine_type": "e2-standard-2", "cost_source": "pricing_unavailable"},
             }
         ],
     )
@@ -480,7 +497,7 @@ def test_azure_vm_catalog_estimate_accepts_instance_type_without_standard_prefix
                 "service_type": "Azure Virtual Machine",
                 "region": "eastus",
                 "cost": 0,
-                "metadata": {"instance_type": "D8as_v5", "cost_source": "billing_unavailable"},
+                "metadata": {"instance_type": "D8as_v5", "cost_source": "pricing_unavailable"},
             }
         ],
     )
@@ -529,7 +546,7 @@ def test_azure_disk_catalog_estimate_requires_size_and_monthly_unit():
                 "service_type": "Azure Managed Disk",
                 "region": "eastus",
                 "cost": 0,
-                "metadata": {"cost_source": "billing_unavailable"},
+                "metadata": {"cost_source": "pricing_unavailable"},
             },
             {
                 "id": "disk-with-size",
@@ -540,7 +557,7 @@ def test_azure_disk_catalog_estimate_requires_size_and_monthly_unit():
                 "service_type": "Azure Managed Disk",
                 "region": "eastus",
                 "cost": 0,
-                "metadata": {"size_gb": 100, "cost_source": "billing_unavailable"},
+                "metadata": {"size_gb": 100, "cost_source": "pricing_unavailable"},
             },
             {
                 "id": "disk-with-disk-size",
@@ -551,7 +568,7 @@ def test_azure_disk_catalog_estimate_requires_size_and_monthly_unit():
                 "service_type": "Azure Managed Disk",
                 "region": "eastus",
                 "cost": 0,
-                "metadata": {"disk_size_gb": 200, "cost_source": "billing_unavailable"},
+                "metadata": {"disk_size_gb": 200, "cost_source": "pricing_unavailable"},
             },
         ],
     )
@@ -566,7 +583,12 @@ def test_azure_disk_catalog_estimate_requires_size_and_monthly_unit():
     assert db.updates[1][1]["cost"] == 24.0
 
 
-def test_catalog_estimate_leaves_unmatched_resource_unchanged():
+@pytest.mark.parametrize("metadata", [
+    {"machine_type": "e2-standard-2", "cost_source": "pricing_unavailable"},
+    {},
+    None,
+])
+def test_catalog_estimate_leaves_unmatched_resource_unchanged(metadata: dict[str, str] | None):
     catalog = ProviderPricingCatalog()
     db = FakeCatalogDB(
         catalog_rows=[],
@@ -580,7 +602,7 @@ def test_catalog_estimate_leaves_unmatched_resource_unchanged():
                 "service_type": "GCP Compute Instance",
                 "region": "us-central1-a",
                 "cost": 0,
-                "metadata": {"machine_type": "e2-standard-2", "cost_source": "billing_unavailable"},
+                "metadata": metadata,
             }
         ],
     )
@@ -589,4 +611,45 @@ def test_catalog_estimate_leaves_unmatched_resource_unchanged():
 
     assert result["updated"] == 0
     assert result["unmatched"] == 1
+    assert result["skipped_actual"] == 0
+    assert result["processed"] == 1
+    assert db.updates == []
+
+
+@pytest.mark.parametrize("cost_source", ["billing_unavailable", "actual", "no_direct_charge", "included", "free"])
+@pytest.mark.parametrize("cost", [0.0, 12.0])
+def test_catalog_estimate_skips_protected_costs_before_lookup(
+    monkeypatch: pytest.MonkeyPatch, cost_source: str, cost: float,
+):
+    catalog = ProviderPricingCatalog()
+    lookup = AsyncMock(wraps=catalog.estimate_resource_monthly_cost)
+    monkeypatch.setattr(catalog, "estimate_resource_monthly_cost", lookup)
+    db = FakeCatalogDB(resources=[{
+        "id": "res-protected",
+        "user_id": "user-1",
+        "integration_id": "int-1",
+        "provider": "aws",
+        "service_type": "AWS EC2 Instance",
+        "region": "us-east-1",
+        "status": "Active",
+        "cost": cost,
+        "metadata": {"instance_type": "t3.micro", "cost_source": cost_source},
+    }])
+    original_resources = deepcopy(db.resources)
+
+    result = asyncio.run(catalog.apply_catalog_estimates(db, "user-1", integration_id="int-1"))
+
+    assert result == {"updated": 0, "skipped_actual": 1, "unmatched": 0, "processed": 1, "samples": []}
+    lookup.assert_not_awaited()
+    assert db.updates == []
+    assert db.resources == original_resources
+
+
+def test_catalog_estimate_handles_empty_resources():
+    catalog = ProviderPricingCatalog()
+    db = FakeCatalogDB()
+
+    result = asyncio.run(catalog.apply_catalog_estimates(db, "user-1", integration_id="int-1"))
+
+    assert result == {"updated": 0, "skipped_actual": 0, "unmatched": 0, "processed": 0, "samples": []}
     assert db.updates == []

@@ -48,21 +48,28 @@ def sanitize_label(raw: str) -> str:
     - Mermaid syntax injection (-->, subgraph, end, etc.)
     - HTML/SVG injection (<script>, <img onerror>)
     - Quote escaping
+
+    Preserves \\n as <br/> for Mermaid multi-line labels.
     """
     if not raw:
         return "(unnamed)"
 
-    label = _DANGEROUS_CHARS.sub("", raw)
+    # Preserve intentional line breaks before sanitizing
+    label = raw.replace("\\n", "\x00BR\x00")
+
+    label = _DANGEROUS_CHARS.sub("", label)
 
     for seq in _MERMAID_SEQUENCES:
         label = label.replace(seq, " ")
 
     for kw in _MERMAID_KEYWORDS:
-        # Case-insensitive keyword replacement
         pattern = re.compile(re.escape(kw), re.IGNORECASE)
         label = pattern.sub(kw.upper(), label)
 
-    if len(label) > 60:
-        label = label[:57] + "..."
+    # Restore line breaks as <br/> (Mermaid's multi-line syntax)
+    label = label.replace("\x00BR\x00", "<br/>")
+
+    if len(label) > 120:
+        label = label[:117] + "..."
 
     return label.strip() or "(unnamed)"

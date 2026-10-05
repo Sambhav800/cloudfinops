@@ -15,9 +15,10 @@ from mcp.server.fastmcp import FastMCP
 from app.db import get_db_client
 from app.core.gpu_service import GpuService
 from app.core.multicloud_comparison import build_multicloud_report
+from app.core.commitment_recommendations import get_commitment_recommendation_result
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("mcp_server")
+logger = logging.getLogger(__name__)
 
 app = FastMCP("cloudfinops-core")
 
@@ -488,6 +489,90 @@ async def get_multicloud_comparison(user_id: str) -> dict:
         provider = resources[0].get("provider")
     report = build_multicloud_report(resources, provider)
     return report
+
+@app.tool()
+async def get_bill_analysis_results(user_id: str) -> dict:
+    """
+    Get the user's most recent bill analysis results including spend breakdown by service,
+    waste grade, savings estimates, and top findings. Use when asked about bill analysis,
+    spend breakdown, or 'what did the bill scan find'.
+    """
+    db = get_db_client()
+    analyses = await db.select("bill_analyses", filters={"user_id": user_id})
+    if not analyses:
+        return {"status": "no_analyses", "message": "No bill analyses found. Upload a bill via the Bill Analysis page."}
+
+    latest = sorted(analyses, key=lambda a: a.get("created_at", ""), reverse=True)[0]
+    return {
+        "status": "found",
+        "provider": latest.get("provider", "unknown"),
+        "total_spend": latest.get("total_spend", 0),
+        "currency": latest.get("currency", "USD"),
+        "waste_grade": latest.get("waste_grade", "N/A"),
+        "by_category": latest.get("by_category", {}),
+        "top_services": (latest.get("raw_services") or [])[:10],
+        "savings_estimate": latest.get("savings_amount", 0),
+        "analyzed_at": latest.get("created_at", ""),
+        "rows_parsed": latest.get("rows_parsed", 0),
+    }
+
+
+@app.tool()
+async def get_commitment_recommendations(user_id: str) -> dict:
+    """
+    Get commitment/reservation purchase recommendations (Reserved Instances, Savings Plans,
+    Committed Use Discounts). Use when asked about 'what RIs should I buy', 'savings plans',
+    'commitment coverage', or 'how to reduce costs with commitments'.
+    """
+    try:
+        result = await get_commitment_recommendation_result(db=get_db_client(), user_id=user_id)
+        payload = result.model_dump()
+        payload["recommendations"] = payload["scenarios"]
+        payload["guidance"] = "Use only these stored provider estimates. Do not invent discounts, coverage, risk probabilities, or purchase amounts. Options for the same account are alternatives."
+        return payload
+    except Exception as error:
+        logger.error("Commitment copilot data unavailable (%s)", type(error).__name__)
+        return {"status": "unavailable", "recommendations": [], "message": "Verified commitment estimates are unavailable; no purchase recommendation can be made."}
+
+
+@app.tool()
+async def get_optimization_recommendations(user_id: str) -> dict:
+    """
+    Get all active optimization recommendations (autoscaling, rightsizing, scheduling, spot candidates).
+    Use when asked about 'what should I optimize', 'recommendations', 'savings opportunities',
+    or 'how to reduce my cloud bill'.
+    """
+    db = get_db_client()
+    notifications = await db.select(
+        "agent_notifications",
+        filters={"user_id": user_id, "status": "pending"},
+    )
+
+    by_type = {}
+    total_savings = 0.0
+    for n in notifications:
+        action_type = n.get("action_type", "review")
+        savings = float(n.get("potential_savings", 0))
+        total_savings += savings
+        by_type.setdefault(action_type, []).append({
+            "resource": n.get("resource_name", "Unknown"),
+            "service_type": n.get("service_type", ""),
+            "action": n.get("action_description", ""),
+            "savings": savings,
+            "severity": n.get("severity", "medium"),
+        })
+
+    return {
+        "total_pending_recommendations": len(notifications),
+        "total_potential_savings": round(total_savings, 2),
+        "by_action_type": {k: len(v) for k, v in by_type.items()},
+        "top_5_by_savings": sorted(
+            [item for items in by_type.values() for item in items],
+            key=lambda x: x["savings"],
+            reverse=True,
+        )[:5],
+    }
+
 
 if __name__ == "__main__":
     logger.info("Starting CloudFinOps FastMCP Server...")

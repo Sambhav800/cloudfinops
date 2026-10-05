@@ -23,6 +23,7 @@ import {
     type BackendReportRecord,
     getDashboardSummary,
     type DashboardSummaryResponse,
+    type DashboardMtdSpend,
 } from "@/lib/api";
 import {
     normalizeResourceRows,
@@ -44,6 +45,32 @@ type DashboardStatsRow = {
     cost_of_inaction_6mo?: number;
 };
 type DailySpendRow = { spend_date: string; amount: number };
+
+export type { DashboardMtdSpend, DashboardProviderMtdSpend } from "@/lib/api";
+export type DashboardBillingSummaryResponse = DashboardSummaryResponse;
+
+export interface DashboardProviderCost {
+    provider: string;
+    spend: number;
+    resources: number;
+    savings: number;
+    current?: number | null;
+    billing?: DashboardMtdSpend;
+}
+
+function unavailableMtdSpend(): DashboardMtdSpend {
+    return {
+        amount: null,
+        currency: "INR",
+        status: "unavailable",
+        completeness: "unavailable",
+        observed_at: null,
+        period_start: "",
+        reason: null,
+        retry_at: null,
+    };
+}
+
 type IntegrationLookupRow = {
     id: string;
     provider: string;
@@ -510,7 +537,7 @@ export async function getDashboardMetrics() {
         current.resources += toMetricNumber(item.stats.active_resources_count);
     }
 
-    const providerCostsArray = ["aws", "azure", "gcp"]
+    const providerCostsArray: DashboardProviderCost[] = ["aws", "azure", "gcp"]
         .map((provider) => {
             const data = providerMap.get(provider) ?? { spend: 0, resources: 0, savings: 0 };
             const label = provider === "gcp" ? "GCP" : provider.charAt(0).toUpperCase() + provider.slice(1);
@@ -556,6 +583,7 @@ export async function getDashboardMetrics() {
             unusedIPs: ipCount,
         },
         providerCosts: providerCostsArray,
+        mtdSpend: unavailableMtdSpend(),
         monthlySavings: displayPotentialSavings,
     };
 }
@@ -564,7 +592,12 @@ export async function getDashboardMetrics() {
  * Combined dashboard data fetch — single API call replaces 10+ separate calls.
  */
 export async function getDashboardPageData() {
-    const summary = await getDashboardSummary();
+    let summary: DashboardBillingSummaryResponse | null;
+    try {
+        summary = await getDashboardSummary();
+    } catch {
+        summary = null;
+    }
     if (!summary) {
         return { stats: null, resources: [] as CloudResource[], wasteData: [], spendData: [], permissionAlert: null, activeIntegrationCount: 0, integrations: [] };
     }
@@ -590,7 +623,8 @@ export async function getDashboardPageData() {
             annualSavings: Math.round(potentialSavings * 12 * 100) / 100,
             wasteSources: { idleEC2: 0, orphanedEBS: 0, unusedIPs: 0 },
             infraHealth: { idleEC2: 0, unattachedEBS: 0, unusedIPs: 0 },
-            providerCosts: [] as { provider: string; spend: number; resources: number; savings: number }[],
+            providerCosts: [] as DashboardProviderCost[],
+            mtdSpend: summary.mtd_spend ?? unavailableMtdSpend(),
             monthlySavings: potentialSavings,
         };
     }
@@ -647,7 +681,7 @@ export async function getDashboardPageData() {
         stats.infraHealth = { idleEC2: idleCount, unattachedEBS: ebsCount, unusedIPs: ipCount };
     }
 
-    // Build providerCosts from integrations + resources
+    // Resource spend remains the optimization baseline, never the MTD billing source.
     if (stats && summary.integrations) {
         const integrationProviderMap = new Map<string, string>();
         for (const integ of summary.integrations) {
@@ -677,9 +711,18 @@ export async function getDashboardPageData() {
         stats.providerCosts = ["aws", "azure", "gcp"]
             .map((p) => {
                 const data = providerAgg.get(p)!;
-                return { provider: p === "gcp" ? "GCP" : p.charAt(0).toUpperCase() + p.slice(1), spend: Math.round(data.spend * 100) / 100, resources: data.resources, savings: data.savings };
+                const billing = summary.provider_mtd_spend?.find((item) => item.provider === p) ?? unavailableMtdSpend();
+                return {
+                    provider: p === "gcp" ? "GCP" : p.charAt(0).toUpperCase() + p.slice(1),
+                    spend: Math.round(data.spend * 100) / 100,
+                    resources: data.resources,
+                    savings: data.savings,
+                    // Summary billing amounts are already INR. Do not convert them again.
+                    current: billing.amount,
+                    billing,
+                };
             })
-            .filter((p) => p.spend > 0 || p.resources > 0);
+            .filter((p) => p.spend > 0 || p.resources > 0 || Array.from(integrationProviderMap.values()).includes(p.provider.toLowerCase()));
     }
 
     // Transform waste distribution

@@ -76,6 +76,7 @@ const navigationSections: NavSection[] = [
                 href: "/dashboard/pending-actions",
                 icon: TrendingDown,
             },
+            { key: "exclusions", name: "Zombie Shield", href: "/dashboard/exclusions", icon: ShieldCheck },
             { key: "forecast", name: "Forecast", href: "/dashboard/forecast", icon: CalendarClock },
             { key: "commitments", name: "Commitments", href: "/dashboard/commitments", icon: PiggyBank },
             { key: "discount-manager", name: "Discounts", href: "/dashboard/discount-manager", icon: Percent },

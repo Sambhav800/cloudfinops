@@ -57,6 +57,16 @@ class BillingIngestor:
         try:
             from azure.storage.blob import BlobServiceClient
 
+            # Reject custom BlobEndpoint values that could SSRF into internal services
+            conn_lower = connection_string.lower()
+            if "blobendpoint=" in conn_lower:
+                import re
+                match = re.search(r"blobendpoint=([^;]+)", conn_lower)
+                if match:
+                    endpoint = match.group(1).strip().rstrip("/")
+                    if not endpoint.endswith(".blob.core.windows.net"):
+                        raise ValueError(f"Rejected non-Azure blob endpoint: {endpoint}")
+
             blob_service = BlobServiceClient.from_connection_string(connection_string)
             container = blob_service.get_container_client(container_name)
             blobs = list(container.list_blobs())

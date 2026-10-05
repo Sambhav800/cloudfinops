@@ -1,10 +1,79 @@
+import type { Metadata } from "next";
 import { Shield, Eye, Zap, Terminal, Cloud, Brain, ArrowRight } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 
+export const metadata: Metadata = {
+  title: "About CloudFinOps — AI Cloud Cost Optimization Platform",
+  description:
+    "CloudFinOps is a bootstrapped, founder-led FinOps platform that helps mid-market teams find and eliminate wasted cloud spend across AWS, Azure, and GCP with read-only, agentless scanning.",
+  alternates: { canonical: "/about" },
+};
+
+const aboutJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "AboutPage",
+  mainEntity: {
+    "@type": "Organization",
+    name: "CloudFinOps",
+    url: "https://cloudfinops.solutions",
+    description:
+      "AI-powered FinOps platform that detects idle cloud resources, eliminates waste, and automates governance across AWS, Azure, and GCP.",
+    foundingDate: "2025",
+    foundingLocation: {
+      "@type": "Place",
+      name: "Zirakpur, Punjab, India",
+    },
+    founder: [
+      {
+        "@type": "Person",
+        name: "Sambhav Pal",
+        jobTitle: "Founder & CEO",
+        knowsAbout: [
+          "Cloud Computing",
+          "FinOps",
+          "SaaS",
+          "Business Strategy",
+          "Cost Optimization",
+        ],
+      },
+      {
+        "@type": "Person",
+        name: "Nishant Jain",
+        jobTitle: "Co-Founder & CTO",
+        knowsAbout: [
+          "Cloud Architecture",
+          "AWS",
+          "Azure",
+          "GCP",
+          "Full-Stack Engineering",
+          "AI/ML",
+          "Infrastructure Automation",
+        ],
+      },
+    ],
+    numberOfEmployees: {
+      "@type": "QuantitativeValue",
+      value: 5,
+      unitText: "employees",
+    },
+    areaServed: "Worldwide",
+    knowsAbout: [
+      "Cloud Cost Optimization",
+      "FinOps",
+      "Cloud Governance",
+      "Infrastructure Waste Detection",
+    ],
+  },
+};
+
 export default function AboutPage() {
     return (
         <div className="bg-black min-h-screen pt-28 pb-16">
+            <script
+                type="application/ld+json"
+                dangerouslySetInnerHTML={{ __html: JSON.stringify(aboutJsonLd) }}
+            />
             <div className="mx-auto max-w-5xl px-6 lg:px-8">
 
                 {/* Header */}
@@ -136,33 +205,66 @@ export default function AboutPage() {
                     </div>
                 </div>
 
-                {/* Founder */}
-                <div className="glass-card p-10 md:p-14 relative overflow-hidden mb-24">
-                    <div className="relative z-10 max-w-3xl mx-auto text-center">
-                        <p className="text-xs text-gray-500 uppercase tracking-widest mb-6">From the Founder</p>
+                {/* Founders */}
+                <div className="mb-24">
+                    <h2 className="text-2xl font-semibold text-white text-center mb-4">The Team</h2>
+                    <p className="text-sm text-gray-500 text-center mb-12 max-w-lg mx-auto">
+                        Two founders. One mission: make cloud cost intelligence accessible to every engineering team.
+                    </p>
 
-                        <blockquote className="text-xl md:text-2xl text-white font-light leading-relaxed mb-8">
-                            &quot;I built CloudFinOps because I saw mid-market teams spending more time
-                            fighting cloud bills than building product. Enterprise FinOps tools
-                            cost more than the waste they find. That shouldn&apos;t be the norm.&quot;
-                        </blockquote>
-
-                        <div className="flex flex-col items-center">
-                            <div className="relative h-20 w-20 mb-3 rounded-full overflow-hidden border border-white/10">
-                                <Image
-                                    src="/images/team/founder.png"
-                                    alt="Sambhav Pal"
-                                    fill
-                                    className="object-cover"
-                                />
+                    <div className="grid md:grid-cols-2 gap-6">
+                        {/* Sambhav */}
+                        <div className="glass-card p-8 md:p-10 relative overflow-hidden">
+                            <div className="relative z-10">
+                                <blockquote className="text-lg text-white font-light leading-relaxed mb-6">
+                                    &quot;I built CloudFinOps because I saw mid-market teams spending more
+                                    time fighting cloud bills than building product. Enterprise FinOps tools
+                                    cost more than the waste they find.&quot;
+                                </blockquote>
+                                <div className="flex items-center gap-3">
+                                    <div className="relative h-14 w-14 rounded-full overflow-hidden border border-white/10 shrink-0">
+                                        <Image
+                                            src="/images/team/founder.png"
+                                            alt="Sambhav Pal, Founder & CEO of CloudFinOps"
+                                            fill
+                                            className="object-cover"
+                                        />
+                                    </div>
+                                    <div>
+                                        <div className="font-semibold text-white">Sambhav Pal</div>
+                                        <div className="text-xs text-gray-500">Founder &amp; CEO</div>
+                                    </div>
+                                </div>
                             </div>
-                            <div className="font-semibold text-white">Sambhav Pal</div>
-                            <div className="text-xs text-gray-500 mt-0.5">Founder</div>
+                            <div className="absolute top-0 right-0 w-48 h-48 bg-primary/5 rounded-full blur-[100px] pointer-events-none" />
+                        </div>
+
+                        {/* Nishant */}
+                        <div className="glass-card p-8 md:p-10 relative overflow-hidden">
+                            <div className="relative z-10">
+                                <blockquote className="text-lg text-white font-light leading-relaxed mb-6">
+                                    &quot;I wanted to build a system where engineers get the same depth of
+                                    infrastructure intelligence that only enterprises could afford-without
+                                    sacrificing security or shipping speed.&quot;
+                                </blockquote>
+                                <div className="flex items-center gap-3">
+                                    <div className="relative h-14 w-14 rounded-full overflow-hidden border border-white/10 shrink-0">
+                                        <Image
+                                            src="/images/team/nishant.png"
+                                            alt="Nishant Jain, Co-Founder & CTO of CloudFinOps"
+                                            fill
+                                            className="object-cover"
+                                        />
+                                    </div>
+                                    <div>
+                                        <div className="font-semibold text-white">Nishant Jain</div>
+                                        <div className="text-xs text-gray-500">Co-Founder &amp; CTO</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="absolute top-0 right-0 w-48 h-48 bg-indigo-500/5 rounded-full blur-[100px] pointer-events-none" />
                         </div>
                     </div>
-
-                    {/* Subtle glow */}
-                    <div className="absolute top-0 right-0 w-64 h-64 bg-primary/5 rounded-full blur-[120px] pointer-events-none" />
                 </div>
 
                 {/* CTA */}

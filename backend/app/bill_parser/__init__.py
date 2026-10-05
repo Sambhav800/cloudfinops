@@ -11,6 +11,7 @@ from .analyzer import (
 from .gemini_extractor import extract_bill_with_gemini, enrich_parsed_bill_with_gemini
 from .parser import parse_bill
 from .pricing import fetch_cross_cloud_prices
+from .validator import validate_cloud_document, ValidationResult
 
 __all__ = [
     "parse_bill",
@@ -21,4 +22,6 @@ __all__ = [
     "generate_executive_report",
     "generate_full_intelligence_report",
     "normalize_full_intelligence_report",
+    "validate_cloud_document",
+    "ValidationResult",
 ]

@@ -58,6 +58,10 @@ def test_dashboard_root_read_routes_are_not_response_cached():
 
 def test_scan_dashboard_confidence_does_not_default_to_fake_ai_score():
     routes_source = Path(__file__).resolve().parents[1].joinpath("app/api/routes.py").read_text()
+    integration_source = Path(__file__).resolve().parents[1].joinpath("app/optimization/scan_integration.py").read_text()
 
     assert 'ai_stats.get("ai_confidence_score", 75)' not in routes_source
-    assert 'ai_stats.get("ai_confidence_score", 0)' in routes_source
+    assert 'opt_result.get("ai_confidence_score", 75)' not in routes_source
+    assert 'opt_result.get("ai_confidence_score", 0)' in routes_source
+    assert "return 75" not in integration_source
+    assert "return 92" not in integration_source

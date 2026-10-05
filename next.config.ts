@@ -3,10 +3,21 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   outputFileTracingRoot: path.resolve(__dirname),
+  poweredByHeader: false,
   turbopack: {
     resolveAlias: {
       tailwindcss: path.resolve(__dirname, "node_modules/tailwindcss"),
     },
+  },
+  async redirects() {
+    return [
+      {
+        source: "/:path*",
+        has: [{ type: "host", value: "www.cloudfinops.solutions" }],
+        destination: "https://cloudfinops.solutions/:path*",
+        permanent: true,
+      },
+    ];
   },
   async headers() {
     return [
@@ -26,7 +37,7 @@ const nextConfig: NextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: https: blob:",
               "font-src 'self' data:",
-              `connect-src 'self' ${process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000"} wss://${(() => { try { return new URL(process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000").host; } catch { return "127.0.0.1:8000"; } })()} https://*.clerk.accounts.dev https://*.clerk.dev https://api.clerk.com https://*.posthog.com`,
+              `connect-src 'self' ${process.env.NEXT_PUBLIC_BACKEND_URL || ""} ${process.env.NODE_ENV === "development" ? "http://127.0.0.1:8000 ws://127.0.0.1:8000 ws://localhost:8000" : ""} wss://${(() => { try { return process.env.NEXT_PUBLIC_BACKEND_URL ? new URL(process.env.NEXT_PUBLIC_BACKEND_URL).host : ""; } catch { return ""; } })()} https://*.clerk.accounts.dev https://*.clerk.dev https://api.clerk.com https://*.posthog.com`,
               "frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.dev",
               "frame-ancestors 'none'",
               "base-uri 'self'",
@@ -39,16 +50,18 @@ const nextConfig: NextConfig = {
     ];
   },
   async rewrites() {
-    return [
-      {
-        source: '/api/:path*',
-        destination: process.env.NEXT_PUBLIC_BACKEND_URL ? `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/:path*` : 'http://127.0.0.1:8000/api/:path*',
-      },
-      {
-        source: '/ws/:path*',
-        destination: process.env.NEXT_PUBLIC_BACKEND_URL ? `${process.env.NEXT_PUBLIC_BACKEND_URL}/ws/:path*` : 'http://127.0.0.1:8000/ws/:path*',
-      },
-    ];
+    return {
+      fallback: [
+        {
+          source: '/api/:path*',
+          destination: process.env.NEXT_PUBLIC_BACKEND_URL ? `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/:path*` : 'http://127.0.0.1:8000/api/:path*',
+        },
+        {
+          source: '/ws/:path*',
+          destination: process.env.NEXT_PUBLIC_BACKEND_URL ? `${process.env.NEXT_PUBLIC_BACKEND_URL}/ws/:path*` : 'http://127.0.0.1:8000/ws/:path*',
+        },
+      ],
+    };
   },
 };
 

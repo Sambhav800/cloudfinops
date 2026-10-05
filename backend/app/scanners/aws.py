@@ -9,12 +9,20 @@ import collections
 from botocore.exceptions import ClientError
 from typing import List, Dict, Optional, Any, Set
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import logging
+import math
 
 from ..core.retry import build_aws_retry_config, call_with_backoff, is_aws_retryable
+from ..core.workload_patterns import (
+    MetricTimeSeries,
+    classify_pattern,
+    generate_recommendation,
+    WorkloadPattern,
+    RecommendationType,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,29 +75,73 @@ class AWSScanner:
     Identifies zombie resources and calculates potential savings.
     """
     
-    def __init__(self, access_key_id: str, secret_access_key: str, regions: Optional[List[str]] = None):
-        self.access_key_id = access_key_id
-        self.secret_access_key = secret_access_key
-        # If no regions specified, use defaults
+    def __init__(
+        self,
+        access_key_id: str = "",
+        secret_access_key: str = "",
+        regions: Optional[List[str]] = None,
+        role_arn: str = "",
+        external_id: str = "",
+    ):
         self.regions = regions if regions else ALL_AWS_REGIONS
         self.executor = ThreadPoolExecutor(max_workers=10)
         self.access_denied_services = set()
         self.resource_cost_status = "not_checked"
         self.resource_cost_message = ""
-    
+
+        # If role_arn provided, assume it to get temporary credentials
+        if role_arn:
+            assumed = self._assume_role(access_key_id, secret_access_key, role_arn, external_id)
+            self.access_key_id = assumed["AccessKeyId"]
+            self.secret_access_key = assumed["SecretAccessKey"]
+            self._session_token = assumed["SessionToken"]
+        else:
+            self.access_key_id = access_key_id
+            self.secret_access_key = secret_access_key
+            self._session_token = None
+
+    @staticmethod
+    def _assume_role(
+        access_key_id: str,
+        secret_access_key: str,
+        role_arn: str,
+        external_id: str = "",
+    ) -> Dict[str, str]:
+        """Assume an IAM role via STS and return temporary credentials."""
+        sts_kwargs: Dict[str, Any] = {}
+        if access_key_id and secret_access_key:
+            sts_kwargs["aws_access_key_id"] = access_key_id
+            sts_kwargs["aws_secret_access_key"] = secret_access_key
+
+        sts = boto3.client("sts", **sts_kwargs)
+        assume_kwargs: Dict[str, Any] = {
+            "RoleArn": role_arn,
+            "RoleSessionName": "CloudFinOps-Scanner",
+            "DurationSeconds": 3600,
+        }
+        if external_id:
+            assume_kwargs["ExternalId"] = external_id
+        else:
+            logger.warning("AssumeRole without ExternalId for %s — confused-deputy risk", role_arn)
+
+        response = sts.assume_role(**assume_kwargs)
+        return response["Credentials"]
+
     def _get_client(self, service: str, region: str):
         """Get a boto3 client for a specific service and region with adaptive retries."""
         session = boto3.Session()
-        return session.client(
-            service,
-            aws_access_key_id=self.access_key_id,
-            aws_secret_access_key=self.secret_access_key,
-            config=build_aws_retry_config(
+        kwargs: Dict[str, Any] = {
+            "aws_access_key_id": self.access_key_id,
+            "aws_secret_access_key": self.secret_access_key,
+            "config": build_aws_retry_config(
                 region_name=region,
                 connect_timeout=3,
                 read_timeout=5,
             ),
-        )
+        }
+        if self._session_token:
+            kwargs["aws_session_token"] = self._session_token
+        return session.client(service, **kwargs)
 
     def _handle_scan_error(self, service: str, error: Exception, region: str = None):
         err_str = str(error)
@@ -418,7 +470,7 @@ class AWSScanner:
         # (Data Transfer, Tax, Support, etc.) We keep the original Cost Explorer `total_spend`.
         # total_spend = sum(r.cost for r in final_resources)
         potential_savings = round(
-            sum(r.cost for r in final_resources if str(r.status).lower() == "zombie"),
+            sum(r.cost for r in final_resources if str(r.status).lower() in ("zombie", "stopped", "idle")),
             2
         )
         
@@ -1035,9 +1087,44 @@ class AWSScanner:
         return await loop.run_in_executor(self.executor, fetch)
     
     # -------------------------------------------------------------------
+    # CloudWatch Hourly Metrics (for workload pattern analysis)
+    # -------------------------------------------------------------------
+
+    def _get_ec2_metrics_hourly(self, cw_client, instance_id: str, lookback_days: int = 30) -> Optional[List[float]]:
+        """
+        Fetch hourly CPU metrics from CloudWatch for workload pattern analysis.
+
+        Returns a chronologically-ordered list of hourly CPU averages
+        (up to 720 points for 30 days), or None if insufficient data.
+        """
+        try:
+            end_time = datetime.now()
+            start_time = end_time - timedelta(days=lookback_days)
+
+            response = cw_client.get_metric_statistics(
+                Namespace='AWS/EC2',
+                MetricName='CPUUtilization',
+                Dimensions=[{'Name': 'InstanceId', 'Value': instance_id}],
+                StartTime=start_time,
+                EndTime=end_time,
+                Period=3600,
+                Statistics=['Average'],
+            )
+
+            datapoints = response.get('Datapoints', [])
+            if len(datapoints) < 48:
+                return None
+
+            sorted_dps = sorted(datapoints, key=lambda dp: dp['Timestamp'])
+            return [dp['Average'] for dp in sorted_dps]
+        except Exception as e:
+            logger.debug("Hourly metrics fetch failed for %s: %s", instance_id, e)
+            return None
+
+    # -------------------------------------------------------------------
     # EC2 Instances
     # -------------------------------------------------------------------
-    
+
     async def _scan_ec2(self, region: str) -> tuple:
         """Scan EC2 instances in a region with FULL metadata for AI verification."""
         loop = asyncio.get_event_loop()
@@ -1080,11 +1167,7 @@ class AWSScanner:
                         
                         monthly_cost = 0.0
                         
-                        if is_stopped:
-                            if monthly_cost > 0:
-                                savings += monthly_cost
-                                waste.append({'category_name': 'Idle EC2', 'value': monthly_cost})
-                        else:
+                        if not is_stopped:
                             active_count += 1
                         
                         # Collect rich metadata for AI verification
@@ -1109,18 +1192,23 @@ class AWSScanner:
                             'pricing_note': 'Exact per-resource cost requires AWS Cost Explorer RESOURCE_ID billing data.',
                         }
                         
-                        # Fetch 7-day average CPU utilization from CloudWatch
+                        # Fetch 7-day summary + 30-day hourly metrics from CloudWatch
+                        ec2_status = 'Active'
+                        ec2_waste_type = None
+
                         if cw_client and not is_stopped:
+                            end_time = datetime.now()
+                            start_time_7d = end_time - timedelta(days=7)
+
+                            # 7-day daily summary for quick stats
                             try:
-                                end_time = datetime.now()
-                                start_time = end_time - timedelta(days=7)
                                 cw_resp = cw_client.get_metric_statistics(
                                     Namespace='AWS/EC2',
                                     MetricName='CPUUtilization',
                                     Dimensions=[{'Name': 'InstanceId', 'Value': instance_id}],
-                                    StartTime=start_time,
+                                    StartTime=start_time_7d,
                                     EndTime=end_time,
-                                    Period=86400,  # 1 day granularity
+                                    Period=86400,
                                     Statistics=['Average']
                                 )
                                 datapoints = cw_resp.get('Datapoints', [])
@@ -1133,6 +1221,123 @@ class AWSScanner:
                                     meta['cpu_datapoints'] = 0
                             except Exception:
                                 meta['avg_cpu_7d'] = None
+
+                            # Network In/Out (bytes -> MB)
+                            try:
+                                for metric_name, meta_key in [
+                                    ('NetworkIn', 'network_in_mb'),
+                                    ('NetworkOut', 'network_out_mb'),
+                                ]:
+                                    cw_net = cw_client.get_metric_statistics(
+                                        Namespace='AWS/EC2',
+                                        MetricName=metric_name,
+                                        Dimensions=[{'Name': 'InstanceId', 'Value': instance_id}],
+                                        StartTime=start_time_7d,
+                                        EndTime=end_time,
+                                        Period=86400,
+                                        Statistics=['Sum']
+                                    )
+                                    net_dps = cw_net.get('Datapoints', [])
+                                    if net_dps:
+                                        total_bytes = sum(dp['Sum'] for dp in net_dps)
+                                        meta[meta_key] = round(total_bytes / (1024 * 1024), 2)
+                            except Exception:
+                                pass
+
+                            # Disk Read/Write Ops
+                            try:
+                                for metric_name, meta_key in [
+                                    ('DiskReadOps', 'disk_read_ops'),
+                                    ('DiskWriteOps', 'disk_write_ops'),
+                                ]:
+                                    cw_disk = cw_client.get_metric_statistics(
+                                        Namespace='AWS/EC2',
+                                        MetricName=metric_name,
+                                        Dimensions=[{'Name': 'InstanceId', 'Value': instance_id}],
+                                        StartTime=start_time_7d,
+                                        EndTime=end_time,
+                                        Period=86400,
+                                        Statistics=['Sum']
+                                    )
+                                    disk_dps = cw_disk.get('Datapoints', [])
+                                    if disk_dps:
+                                        total_ops = sum(dp['Sum'] for dp in disk_dps)
+                                        avg_daily_ops = total_ops / len(disk_dps)
+                                        meta[meta_key] = round(avg_daily_ops, 2)
+                            except Exception:
+                                pass
+
+                            # --- Idle detection: running but CPU < 2%, network < 1 MB ---
+                            avg_cpu_7d = meta.get('avg_cpu_7d')
+                            net_in = meta.get('network_in_mb', 0)
+                            net_out = meta.get('network_out_mb', 0)
+                            if avg_cpu_7d is not None and avg_cpu_7d < 2.0 and (net_in + net_out) < 1.0:
+                                ec2_status = 'Zombie'
+                                ec2_waste_type = 'idle'
+                                meta['waste_reason'] = (
+                                    f"IDLE: avg CPU {avg_cpu_7d:.1f}%, network {net_in + net_out:.1f} MB "
+                                    f"over 7 days. Running but processing no workload."
+                                )
+                            else:
+                                # --- 30-day workload pattern analysis ---
+                                try:
+                                    hourly_data = self._get_ec2_metrics_hourly(cw_client, instance_id, lookback_days=30)
+                                    if hourly_data and len(hourly_data) >= 48:
+                                        series = MetricTimeSeries(hourly_values=hourly_data, metric_name="cpu")
+                                        analysis = classify_pattern(series)
+
+                                        instance_type_str = instance.get('InstanceType', '')
+                                        vcpu_guess = 2
+                                        try:
+                                            size_part = instance_type_str.split('.')[1] if '.' in instance_type_str else ''
+                                            vcpu_map = {'nano': 1, 'micro': 1, 'small': 1, 'medium': 1,
+                                                        'large': 2, 'xlarge': 4, '2xlarge': 8, '4xlarge': 16,
+                                                        '8xlarge': 32, '12xlarge': 48, '16xlarge': 64, '24xlarge': 96}
+                                            vcpu_guess = vcpu_map.get(size_part, 2)
+                                        except Exception:
+                                            pass
+
+                                        rec = generate_recommendation(
+                                            analysis,
+                                            current_vm_size=instance_type_str,
+                                            current_monthly_cost=monthly_cost,
+                                            current_vm_vcpus=max(vcpu_guess, 1),
+                                        )
+
+                                        meta['workload_pattern'] = analysis.pattern.value
+                                        meta['peak_trough_ratio'] = analysis.peak_trough_ratio
+                                        meta['peak_avg_cpu'] = analysis.peak_avg
+                                        meta['trough_avg_cpu'] = analysis.trough_avg
+                                        meta['p90_cpu'] = analysis.p90
+                                        meta['p95_cpu'] = analysis.p95
+                                        meta['observation_days'] = analysis.observation_days
+                                        meta['recommendation_type'] = rec.type.value
+                                        meta['recommendation_explanation'] = rec.explanation
+                                        meta['estimated_savings_pct'] = rec.estimated_savings_pct
+                                        meta['pattern_confidence'] = rec.confidence
+
+                                        if rec.autoscale:
+                                            meta['autoscale_min_instances'] = rec.autoscale.min_instances
+                                            meta['autoscale_max_instances'] = rec.autoscale.max_instances
+                                            meta['autoscale_scale_out_cpu'] = rec.autoscale.scale_out_cpu_pct
+                                            meta['autoscale_scale_in_cpu'] = rec.autoscale.scale_in_cpu_pct
+                                            meta['autoscale_cooldown_min'] = rec.autoscale.cooldown_minutes
+
+                                        if rec.schedule:
+                                            meta['schedule_stop_days'] = rec.schedule.stop_days
+                                            meta['schedule_savings_pct'] = rec.schedule.estimated_savings_pct
+
+                                        if rec.type in (RecommendationType.AUTOSCALE, RecommendationType.SCHEDULE,
+                                                        RecommendationType.RIGHTSIZE, RecommendationType.SPOT_CANDIDATE):
+                                            ec2_status = 'Idle'
+                                            ec2_waste_type = rec.type.value
+                                        else:
+                                            ec2_status = 'Active'
+                                    else:
+                                        meta['workload_pattern'] = 'unknown'
+                                except Exception as e:
+                                    logger.debug("Workload pattern analysis failed for %s: %s", instance_id, e)
+                                    meta['workload_pattern'] = 'unknown'
 
                         instance_type_lower = str(instance.get('InstanceType', '')).lower()
                         # Expanded GPU detection: P-series (V100/A100/H100), G-series (T4/A10G),
@@ -1173,11 +1378,19 @@ class AWSScanner:
                                     "JarvisLabs or RunPod for equivalent T4/A10G throughput at 30-40% lower cost."
                                 )
                         
+                        final_status = 'Stopped' if is_stopped else ec2_status
+                        if is_stopped and monthly_cost > 0:
+                            ec2_waste_type = 'stopped'
+
+                        if ec2_waste_type and monthly_cost > 0:
+                            savings += monthly_cost
+                            waste.append({'category_name': f'EC2 {ec2_waste_type}', 'value': monthly_cost})
+
                         resources.append(ScannedResource(
                             resource_name=name,
                             service_type='AWS EC2 Instance',
                             cost=monthly_cost,
-                            status='Zombie' if is_stopped else 'Active',
+                            status=final_status,
                             region=region,
                             region_compliance='shadow_it' if is_shadow_it else 'compliant',
                             created_by=owner,
@@ -1904,28 +2117,21 @@ class AWSScanner:
                             cache_enabled = bool(stage.get('cacheClusterEnabled', False))
                             cache_size = float(stage.get('cacheClusterSize', '0') or '0')
 
-                            # CloudWatch metrics (7 days)
-                            invocations_7d = 0
-                            error_4xx = 0
-                            error_5xx = 0
-                            latency_p99 = 0
-                            cache_hits = 0
-                            cache_misses = 0
+                            # Missing telemetry is not evidence of zero traffic.
+                            end_time = datetime.now(timezone.utc)
+                            start_time = end_time - timedelta(days=7)
+                            dimensions = [
+                                {'Name': 'ApiName', 'Value': api_name},
+                                {'Name': 'Stage', 'Value': stage_name},
+                            ]
+                            metric_collection: Dict[str, str] = {}
 
-                            try:
-                                from datetime import datetime, timedelta
-                                end_time = datetime.utcnow()
-                                start_time = end_time - timedelta(days=7)
-                                dimensions = [
-                                    {'Name': 'ApiName', 'Value': api_name},
-                                    {'Name': 'Stage', 'Value': stage_name},
-                                ]
-
-                                for metric_name, target in [
-                                    ('Count', 'invocations'),
-                                    ('4XXError', '4xx'),
-                                    ('5XXError', '5xx'),
-                                ]:
+                            def collect_metric(metric_name: str) -> Optional[float]:
+                                try:
+                                    statistic = (
+                                        {'ExtendedStatistics': ['p99']}
+                                        if metric_name == 'Latency' else {'Statistics': ['Sum']}
+                                    )
                                     resp = cw_client.get_metric_statistics(
                                         Namespace='AWS/ApiGateway',
                                         MetricName=metric_name,
@@ -1933,65 +2139,65 @@ class AWSScanner:
                                         StartTime=start_time,
                                         EndTime=end_time,
                                         Period=604800,
-                                        Statistics=['Sum'],
+                                        **statistic,
                                     )
                                     dps = resp.get('Datapoints', [])
-                                    total = sum(dp.get('Sum', 0) for dp in dps)
-                                    if target == 'invocations':
-                                        invocations_7d = int(total)
-                                    elif target == '4xx':
-                                        error_4xx = int(total)
-                                    elif target == '5xx':
-                                        error_5xx = int(total)
-
-                                # Latency p99
-                                resp = cw_client.get_metric_statistics(
-                                    Namespace='AWS/ApiGateway',
-                                    MetricName='Latency',
-                                    Dimensions=dimensions,
-                                    StartTime=start_time,
-                                    EndTime=end_time,
-                                    Period=604800,
-                                    ExtendedStatistics=['p99'],
-                                )
-                                dps = resp.get('Datapoints', [])
-                                if dps:
-                                    latency_p99 = dps[0].get('ExtendedStatistics', {}).get('p99', 0)
-
-                                # Cache metrics
-                                if cache_enabled:
-                                    for m, tgt in [('CacheHitCount', 'hits'), ('CacheMissCount', 'misses')]:
-                                        resp = cw_client.get_metric_statistics(
-                                            Namespace='AWS/ApiGateway',
-                                            MetricName=m,
-                                            Dimensions=dimensions,
-                                            StartTime=start_time,
-                                            EndTime=end_time,
-                                            Period=604800,
-                                            Statistics=['Sum'],
+                                    if not dps:
+                                        metric_collection[metric_name] = 'no_data'
+                                        return None
+                                    values = [
+                                        dp.get('ExtendedStatistics', {}).get('p99')
+                                        if metric_name == 'Latency' else dp.get('Sum')
+                                        for dp in dps
+                                    ]
+                                    if any(
+                                        isinstance(value, bool)
+                                        or not isinstance(value, (int, float))
+                                        or not math.isfinite(value)
+                                        or value < 0
+                                        for value in values
+                                    ):
+                                        metric_collection[metric_name] = 'invalid_data'
+                                        logger.warning(
+                                            "API Gateway %s metric has invalid datapoints in %s", metric_name, region,
                                         )
-                                        dps = resp.get('Datapoints', [])
-                                        val = sum(dp.get('Sum', 0) for dp in dps)
-                                        if tgt == 'hits':
-                                            cache_hits = int(val)
-                                        else:
-                                            cache_misses = int(val)
-                            except Exception:
-                                pass
+                                        return None
+                                    value = float(values[0] if metric_name == 'Latency' else sum(values))
+                                    if not math.isfinite(value) or (metric_name != 'Latency' and not value.is_integer()):
+                                        metric_collection[metric_name] = 'invalid_data'
+                                        logger.warning("API Gateway %s metric has an invalid total in %s", metric_name, region)
+                                        return None
+                                    metric_collection[metric_name] = 'available'
+                                    return value
+                                except Exception as error:
+                                    metric_collection[metric_name] = 'error'
+                                    self._handle_scan_error(f"API Gateway CloudWatch {metric_name}", error, region)
+                                    return None
+
+                            request_count = collect_metric('Count')
+                            invocations_7d = int(request_count) if request_count is not None else None
+                            error_4xx = collect_metric('4XXError')
+                            error_5xx = collect_metric('5XXError')
+                            latency_p99 = collect_metric('Latency')
+                            cache_hits = collect_metric('CacheHitCount') if cache_enabled else None
+                            cache_misses = collect_metric('CacheMissCount') if cache_enabled else None
 
                             cache_hit_rate = None
-                            if cache_enabled and (cache_hits + cache_misses) > 0:
+                            if cache_hits is not None and cache_misses is not None and (cache_hits + cache_misses) > 0:
                                 cache_hit_rate = round((cache_hits / (cache_hits + cache_misses)) * 100, 2)
 
-                            error_rate_4xx = round((error_4xx / invocations_7d) * 100, 2) if invocations_7d > 0 else 0
-                            error_rate_5xx = round((error_5xx / invocations_7d) * 100, 2) if invocations_7d > 0 else 0
+                            error_rate_4xx = None
+                            error_rate_5xx = None
+                            if invocations_7d is not None and invocations_7d > 0:
+                                if error_4xx is not None:
+                                    error_rate_4xx = round((error_4xx / invocations_7d) * 100, 2)
+                                if error_5xx is not None:
+                                    error_rate_5xx = round((error_5xx / invocations_7d) * 100, 2)
 
                             # Determine status
-                            status = 'Active'
-                            waste_type = None
+                            status = 'Unknown' if invocations_7d is None else 'Active'
                             if invocations_7d == 0:
                                 status = 'Zombie'
-                                waste_type = 'ghost_api'
 
                             meta = {
                                 'api_id': api_id,
@@ -2000,10 +2206,11 @@ class AWSScanner:
                                 'stage_name': stage_name,
                                 'endpoint_type': endpoint_type,
                                 'invocations_7d': invocations_7d,
-                                'avg_daily_invocations': round(invocations_7d / 7, 1),
+                                'metric_collection': metric_collection,
+                                'avg_daily_invocations': round(invocations_7d / 7, 1) if invocations_7d is not None else None,
                                 'error_rate_4xx': error_rate_4xx,
                                 'error_rate_5xx': error_rate_5xx,
-                                'latency_p99_ms': round(latency_p99, 1),
+                                'latency_p99_ms': round(latency_p99, 1) if latency_p99 is not None else None,
                                 'cache_enabled': cache_enabled,
                                 'cache_hit_rate': cache_hit_rate,
                                 'cache_size_gb': cache_size,

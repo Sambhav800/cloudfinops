@@ -68,9 +68,14 @@ def _is_allowed_origin(websocket: WebSocket) -> bool:
         return True  # Non-browser clients (curl, SDKs) don't send Origin
 
     settings = get_settings()
-    allowed = {settings.frontend_url}
+    frontend = settings.frontend_url
+    allowed = {frontend}
+    if frontend.startswith("https://"):
+        domain = frontend.replace("https://", "")
+        allowed.add(f"https://www.{domain}")
+        allowed.add(f"https://{domain}")
     if settings.debug:
-        allowed.update({"http://localhost:3000", "http://localhost:3001", "http://127.0.0.1:3000"})
+        allowed.update({"http://localhost:3000", "http://localhost:3001", "http://127.0.0.1:3000", "http://127.0.0.1:3001"})
 
     return origin in allowed
 

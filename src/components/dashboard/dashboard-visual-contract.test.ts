@@ -71,6 +71,14 @@ const commitmentsPageSource = readFileSync(
     new URL("../../app/dashboard/commitments/page.tsx", import.meta.url),
     "utf8"
 );
+const commitmentsClientSource = readFileSync(
+    new URL("../../lib/commitments/client.ts", import.meta.url),
+    "utf8"
+);
+const commitmentCoverageSource = readFileSync(
+    new URL("./commitments/coverage-donut.tsx", import.meta.url),
+    "utf8"
+);
 const pendingActionsExecuteRouteSource = readFileSync(
     new URL("../../app/api/pending-actions/execute/route.ts", import.meta.url),
     "utf8"
@@ -99,11 +107,13 @@ test("dashboard sections define the provider filter tabs and pass activeProvider
     assert.ok(sectionsSource.includes("Portfolio operating posture"));
     assert.ok(sectionsSource.includes("Provider Lens"));
     assert.ok(sectionsSource.includes("<CostScoreSection"));
-    assert.ok(sectionsSource.includes("activeProvider={activeProvider}"));
-    assert.ok(sectionsSource.includes("<FinOpsInsights stats={stats} activeProvider={activeProvider} />"));
+    assert.match(sectionsSource, /<CostScoreSection\b[^>]*activeProvider=\{activeProvider\}/);
+    assert.match(sectionsSource, /<DashboardOverview\b[^>]*activeProvider=\{activeProvider\}/);
+    assert.ok(sectionsSource.includes("mtdSpend={stats.mtdSpend}"));
     assert.ok(sectionsSource.includes("availableProviderCosts"));
     assert.ok(sectionsSource.includes("providerCost.resources > 0"));
     assert.ok(sectionsSource.includes("providerCost.savings > 0"));
+    assert.ok(sectionsSource.includes("providerCost.billing !== undefined"));
     assert.ok(!sectionsSource.includes("AI-Powered Infrastructure Analysis"));
 });
 
@@ -121,13 +131,14 @@ test("overview uses a direct recharts area chart and custom waste bars with empt
     assert.ok(overviewSource.includes("No waste detected"));
     assert.ok(overviewSource.includes("and {sortedWasteData.length - visibleWasteData.length} more"));
     assert.ok(overviewSource.includes("No spend history yet — run a scan to populate"));
-    assert.ok(overviewSource.includes("animate-pulse"));
+    assert.ok(overviewSource.includes("<BillingFreshness billing={stats?.mtdSpend} />"));
+    assert.ok(!overviewSource.includes("animate-pulse"));
     assert.ok(overviewSource.includes("linearGradient id=\"spendGradient\""));
     assert.ok(overviewSource.includes("grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8"));
     assert.ok(overviewSource.includes("style={{ minHeight: '320px' }}"));
 });
 
-test("overview and optimizer monetary displays use INR formatters instead of visible dollar prefixes", () => {
+test("overview uses INR formatters while optimizer preserves provider currency", () => {
     const dollarSign = String.fromCharCode(36);
 
     assert.ok(overviewSource.includes("formatInrCurrency"));
@@ -136,7 +147,10 @@ test("overview and optimizer monetary displays use INR formatters instead of vis
     assert.ok(!overviewSource.includes("item.value.toLocaleString()"));
     assert.ok(!overviewSource.includes("value >= 1000 ?"));
     assert.ok(!overviewSource.includes("Number(value).toLocaleString()"));
-    assert.ok(optimizerPageSource.includes("formatInrCurrency(toDisplayInrAmount"));
+    for (const amount of ["hourly_commitment_usd", "monthly_commitment_usd", "monthly_saving_usd", "annual_saving_usd"]) {
+        assert.ok(optimizerPageSource.includes(`formatCommitmentMoney(scenario.${amount}, data.currency)`));
+    }
+    assert.ok(!optimizerPageSource.includes("toDisplayInrAmount"));
     assert.ok(!optimizerPageSource.includes(dollarSign + dollarSign + "{formatCurrency("));
     assert.ok(arbitragePageSource.includes("formatAnalysisAmountInInr"));
     assert.ok(!arbitragePageSource.includes(" · " + dollarSign));
@@ -146,12 +160,14 @@ test("overview and optimizer monetary displays use INR formatters instead of vis
 });
 
 test("overview table uses provider-aware enterprise labels instead of mismatched id copy", () => {
-    assert.ok(overviewSource.includes('<th className="w-[30%] p-4 font-medium">Resource</th>'));
-    assert.ok(overviewSource.includes('<th className="w-[12%] p-4 font-medium">Provider</th>'));
-    assert.ok(overviewSource.includes('<th className="w-[12%] p-4 font-medium text-right">Cost Signal</th>'));
+    assert.ok(overviewSource.includes('<th className="w-[28%] p-4 font-medium">Resource</th>'));
+    assert.ok(overviewSource.includes('<th className="w-[11%] p-4 font-medium">Provider</th>'));
+    assert.ok(overviewSource.includes('<th className="w-[11%] p-4 font-medium text-right">Cost Signal</th>'));
+    assert.ok(overviewSource.includes('<th className="w-[7%] p-4 font-medium text-center">Shield</th>'));
+    assert.ok(overviewSource.includes("setShieldingResource(item)"));
     assert.ok(overviewSource.includes('min-w-[1080px] table-fixed'));
     assert.ok(overviewSource.includes("const visibleResources = [...filteredResources].sort"));
-    assert.ok(overviewSource.includes('colSpan={6}'));
+    assert.ok(overviewSource.includes('colSpan={7}'));
     assert.ok(!overviewSource.includes('Resource ID'));
 });
 
@@ -262,7 +278,7 @@ test("resources page and table include the Phase 3 badges, columns, and type sum
     assert.ok(resourcesViewSource.includes("resource.cost_label"));
     assert.ok(overviewSource.includes("item.costLabel || valueFormatter(item.cost)"));
     assert.ok(resourcesViewSource.includes("providerStyle.label"));
-    assert.ok(resourcesViewSource.includes("resource.metadata?.tags?.Owner"));
+    assert.ok(resourcesViewSource.includes("resource.tags?.Owner"));
     assert.ok(resourcesViewSource.includes("Resources by Type"));
     assert.ok(resourcesViewSource.includes("Resources by Cloud"));
     assert.ok(resourcesViewSource.includes("const typeCountData ="));
@@ -336,9 +352,11 @@ test("pending actions route no longer hides the live list behind an ssr:false dy
     assert.ok(pendingActionsListClientSource.includes('import { PendingActionsList } from "@/components/dashboard/actions-list";'));
 });
 
-test("pending actions page renders the updated list directly from the active route", () => {
-    assert.ok(pendingActionsPageSource.includes('import { PendingActionsList } from "@/components/dashboard/actions-list";'));
-    assert.ok(pendingActionsPageSource.includes("<PendingActionsList initialActions={actions} />"));
+test("pending actions page renders the canonical recommendation ledger from the active route", () => {
+    assert.ok(pendingActionsPageSource.includes('import { RecommendationLedgerView } from "@/components/dashboard/recommendation-ledger-view";'));
+    assert.ok(pendingActionsPageSource.includes("await getRecommendationLedger()"));
+    assert.ok(pendingActionsPageSource.includes("<RecommendationLedgerView initialData={recommendations} />"));
+    assert.ok(!pendingActionsPageSource.includes("<PendingActionsList"));
     assert.ok(!pendingActionsPageSource.includes("PendingActionsListClient"));
 });
 
@@ -360,15 +378,29 @@ test("pending actions loader maps durable notification metadata before falling b
     assert.ok(dashboardDataSource.includes(".map((action) => mapPendingActionRow(action as NotificationRow));"));
 });
 
-test("commitments page derives coverage analytics from backend recommendation data instead of hardcoded spend numbers", () => {
-    assert.ok(commitmentsPageSource.includes('/api/finance/commitment-recommendation'));
-    assert.ok(commitmentsPageSource.includes('recommended_scenario'));
-    assert.ok(commitmentsPageSource.includes('forecast_eom_spend_usd'));
-    assert.ok(commitmentsPageSource.includes('commitment_pct'));
+test("commitments page uses backend snapshots and leaves unmeasured coverage distinct from purchase estimates", () => {
+    assert.ok(commitmentsClientSource.includes('/api/finance/commitments'));
+    assert.ok(commitmentsClientSource.includes('/api/finance/commitment-recommendation'));
+    assert.ok(commitmentsPageSource.includes('await loadCommitmentSnapshot(signal)'));
+    assert.ok(commitmentsPageSource.includes('await loadCommitmentRecommendations(signal)'));
+    assert.ok(commitmentsPageSource.includes('<CommitmentsKpiStrip summary={snapshot.summary} />'));
+    assert.ok(commitmentsPageSource.includes('<CoverageDonut />'));
+    assert.ok(commitmentCoverageSource.includes('title="Coverage: Not measured"'));
+    assert.ok(commitmentsPageSource.includes('scenarios={recommendation.scenarios ?? []} currency={recommendation.currency}'));
+    assert.ok(!commitmentsPageSource.includes('recommended_scenario'));
+    assert.ok(!commitmentsPageSource.includes('forecast_eom_spend_usd'));
+    assert.ok(!commitmentsPageSource.includes('commitment_pct'));
     assert.ok(!commitmentsPageSource.includes("const coverageData = ["));
     assert.ok(!commitmentsPageSource.includes("63%"));
     assert.ok(!commitmentsPageSource.includes("$19,663"));
     assert.ok(!commitmentsPageSource.includes("AWS US-East-1 (Compute)"));
+});
+
+test("commitment client requires null coverage and unassessed risk for provider alternatives", () => {
+    assert.ok(commitmentsClientSource.includes('value.commitment_pct === null'));
+    assert.ok(commitmentsClientSource.includes('value.effective_discount_pct === null'));
+    assert.ok(commitmentsClientSource.includes('value.over_commitment_risk_pct === null'));
+    assert.ok(commitmentsClientSource.includes('value.risk_level === "Unassessed"'));
 });
 
 test("pending action proxy routes delegate approve, reject, and script generation to backend endpoints", () => {

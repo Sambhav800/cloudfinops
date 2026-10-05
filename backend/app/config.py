@@ -8,7 +8,7 @@ from functools import lru_cache
 from typing import Optional
 
 
-DEFAULT_GEMINI_FLASH_MODEL = "gemini-3-flash-preview"
+DEFAULT_GEMINI_FLASH_MODEL = "gemini-3.7-flash"
 DEFAULT_GEMINI_FAST_MODEL = DEFAULT_GEMINI_FLASH_MODEL
 
 

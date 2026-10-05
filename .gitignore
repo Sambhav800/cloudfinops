@@ -1,7 +1,9 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies
+node_modules/
 /node_modules
+pitch-deck/
 /.pnp
 .pnp.*
 .yarn/*
@@ -13,6 +15,12 @@
 # testing
 /coverage
 .pytest_cache/
+
+# playwright
+/playwright-report/
+/test-results/
+/.auth/
+
 
 # next.js
 /.next/
@@ -100,6 +108,10 @@ trigger_scan.py
 .claude/
 outputs/
 graphify-out/
+*.rvf.lock
+ruvector.db
+backend/ruvector.db
+backend/app/adk/.adk/
 
 # GitHub Actions GCP auth credentials
 gha-creds-*.json

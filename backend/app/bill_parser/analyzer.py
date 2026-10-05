@@ -18,6 +18,7 @@ from .parser import _CREDIT_SAVINGS_PATTERNS, _categorize_service
 from .pdf_parser import clean_service_name
 from .pricing import _CATEGORY_MULTIPLIERS
 from ..config import GEMINI_BILL_MODEL
+from ..core.gemini_models import resolve_gemini_model_name
 from ..core.price_service import price_service
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,7 @@ _AI_MODEL_CANDIDATES = tuple(
     candidate.strip()
     for candidate in (
         os.environ.get("BILL_ANALYSIS_GEMINI_MODELS")
-        or f"{GEMINI_BILL_MODEL},gemini-3-flash-preview,gemini-2.5-flash"
+        or GEMINI_BILL_MODEL
     ).split(",")
     if candidate.strip()
 )
@@ -2860,6 +2861,7 @@ async def _generate_with_gemini(
     last_error: Exception | None = None
     for model_name in _AI_MODEL_CANDIDATES:
         try:
+            resolved_model_name = await resolve_gemini_model_name(model_name, api_key=api_key)
             payload = {
                 "contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {
@@ -2868,7 +2870,7 @@ async def _generate_with_gemini(
                     "maxOutputTokens": 32768,
                 },
             }
-            url = f"{GEMINI_API_BASE}/models/{model_name}:generateContent?key={api_key}"
+            url = f"{GEMINI_API_BASE}/models/{resolved_model_name}:generateContent?key={api_key}"
             async with httpx.AsyncClient(timeout=timeout_seconds) as client:
                 response = await client.post(url, json=payload)
                 response.raise_for_status()
@@ -2887,7 +2889,7 @@ async def _generate_with_gemini(
             logger.warning(
                 "Gemini %s failed for model %s with HTTP %s, trying next model",
                 purpose,
-                model_name,
+                resolved_model_name,
                 error.response.status_code,
             )
             continue

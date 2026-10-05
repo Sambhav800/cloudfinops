@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 
 from ..config import GEMINI_API_KEY, GEMINI_BILL_MODEL
+from ..core.gemini_models import resolve_gemini_model_name
 from .parser import _categorize_service
 
 logger = logging.getLogger(__name__)
@@ -179,6 +180,14 @@ def _normalize_gemini_bill_payload(
     content_size: int,
     model_name: str,
 ) -> dict[str, Any] | None:
+    # Gemini may return {is_cloud_bill: false} for non-cloud documents
+    if payload.get("is_cloud_bill") is False:
+        rejection_reason = str(payload.get("rejection_reason") or "Non-cloud document").strip()[:300]
+        raise ValueError(
+            f"The uploaded document does not appear to be a cloud provider bill ({rejection_reason}). "
+            "Please upload a supported cloud billing document (AWS, Azure, GCP, etc.)."
+        )
+
     services = _normalize_services(
         payload.get("raw_services")
         or payload.get("services")
@@ -265,8 +274,24 @@ You are extracting a cloud provider bill for CloudFinOps.
 
 File name: {filename}
 
-Return only valid JSON with this exact shape:
+IMPORTANT — Domain check first:
+Before extracting, determine whether this file is a cloud provider bill, hosting invoice, or cloud usage export.
+If the document is ANY of the following, return ONLY this JSON and nothing else:
+  {{"is_cloud_bill": false, "rejection_reason": "<brief reason, e.g. medical report, academic transcript, legal document, retail receipt>"}}
+
+NOT cloud bills:
+- Medical / pathology / laboratory reports (blood tests, CBC, lipid panel, etc.)
+- Academic transcripts, grade cards, marksheets, syllabi
+- Legal documents, affidavits, court orders
+- Retail / e-commerce purchase receipts (Amazon shopping, Flipkart, etc.)
+- Bank statements not related to cloud billing
+- HR letters, salary slips, insurance documents
+
+Cloud bills include: AWS invoices, Azure cost exports, GCP billing exports, usage CSVs from cloud providers.
+
+If it IS a cloud bill, return only valid JSON with this exact shape:
 {{
+  "is_cloud_bill": true,
   "provider": "aws|azure|gcp|generic",
   "currency": "<3-letter ISO currency code as shown in the bill, e.g. USD, INR, EUR, GBP>",
   "billing_period": "string if visible",
@@ -322,7 +347,7 @@ async def extract_bill_with_gemini(
         )
         return None
 
-    model_name = os.environ.get("BILL_ANALYSIS_GEMINI_MODEL") or GEMINI_BILL_MODEL
+    configured_model = os.environ.get("BILL_ANALYSIS_GEMINI_MODEL") or GEMINI_BILL_MODEL
     payload = {
         "contents": [
             {
@@ -344,8 +369,9 @@ async def extract_bill_with_gemini(
         },
     }
 
-    url = f"{GEMINI_API_BASE}/models/{model_name}:generateContent?key={api_key}"
     try:
+        model_name = await resolve_gemini_model_name(configured_model, api_key=api_key)
+        url = f"{GEMINI_API_BASE}/models/{model_name}:generateContent?key={api_key}"
         async with httpx.AsyncClient(timeout=_GEMINI_BILL_TIMEOUT_SECONDS) as client:
             response = await client.post(url, json=payload)
             response.raise_for_status()

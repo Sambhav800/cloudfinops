@@ -9,9 +9,8 @@ export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
     try {
         const authContext = await getBackendAuthContext();
-        const fallbackUserId = request.nextUrl.searchParams.get("userId");
 
-        if (!authContext && !fallbackUserId) {
+        if (!authContext?.userId) {
             return NextResponse.json({ detail: "Unauthorized" }, { status: 401 });
         }
 
@@ -24,7 +23,7 @@ export async function GET(request: NextRequest) {
         const response = await fetchWithBackendAuthFallback(fetch, backendUrl.toString(), {
             method: "GET",
             cache: "no-store",
-        }, authContext ?? { userId: null, token: null }, fallbackUserId);
+        }, authContext);
 
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {

@@ -2,330 +2,157 @@
 
 import { useState, useEffect } from "react";
 import { PiggyBank, AlertTriangle } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
-import { CloudCommitment, FinanceCommitmentsResponse } from "@/lib/api";
-import { formatInrCurrency, toDisplayInrAmount } from "@/lib/resources/contract";
-
+import type { CommitmentRecommendationResponse, FinanceCommitmentsResponse } from "@/lib/api";
+import { commitmentSupportLabel, commitmentSyncLabel, formatCommitmentDate, formatCommitmentMoney } from "@/lib/commitments/presentation";
+import { loadCommitmentRecommendations, loadCommitmentSnapshot } from "@/lib/commitments/client";
+import { Skeleton } from "@/components/ui/skeleton";
 import { CommitmentsKpiStrip } from "@/components/dashboard/commitments/kpi-strip";
 import { CoverageDonut } from "@/components/dashboard/commitments/coverage-donut";
 import { InvestmentReturn } from "@/components/dashboard/commitments/investment-return";
-import { ExpiryTimeline } from "@/components/dashboard/commitments/expiry-timeline";
-import type { ExpiryBucket } from "@/components/dashboard/commitments/expiry-timeline";
-import { InventoryTable } from "@/components/dashboard/commitments/inventory-table";
-import type { FormattedCommitment } from "@/components/dashboard/commitments/inventory-table";
-import { AiCopilotCard } from "@/components/dashboard/commitments/ai-copilot-card";
+import { ExpiryTimeline, type ExpiryBucket } from "@/components/dashboard/commitments/expiry-timeline";
+import { InventoryTable, type FormattedCommitment } from "@/components/dashboard/commitments/inventory-table";
+import { ProviderRecommendationsCard } from "@/components/dashboard/commitments/ai-copilot-card";
 import { ScenarioComparison } from "@/components/dashboard/commitments/scenario-comparison";
-
-const formatMoney = (usd: number) =>
-    formatInrCurrency(toDisplayInrAmount(usd, "USD"), {
-        minimumFractionDigits: 0,
-        maximumFractionDigits: 0,
-    });
-
-type CommitmentScenario = {
-    label: string;
-    commitment_pct: number;
-    monthly_commitment_usd: number;
-    monthly_saving_usd: number;
-    annual_saving_usd: number;
-    effective_discount_pct: number;
-    over_commitment_risk_pct: number;
-    risk_level: "Low" | "Medium" | "High";
-    term_years: number;
-};
-
-type CommitmentRecommendationResponse = {
-    status: "ready" | "insufficient_history" | "no_spend_data";
-    message?: string | null;
-    days_available?: number | null;
-    analysis_basis_days?: number | null;
-    forecast_eom_spend_usd?: number | null;
-    scenarios?: CommitmentScenario[];
-    recommended_scenario?: CommitmentScenario | null;
-};
-
-function computeRiskLevel(utilization: number, daysRemaining: number): "Low" | "Medium" | "High" {
-    if (utilization < 50 || daysRemaining < 30) return "High";
-    if (utilization < 70 || daysRemaining < 90) return "Medium";
-    return "Low";
-}
 
 function buildExpiryBuckets(commitments: FormattedCommitment[]): ExpiryBucket[] {
     const now = new Date();
     const buckets: ExpiryBucket[] = [];
-
     for (let i = 0; i < 6; i++) {
-        const month = new Date(now.getFullYear(), now.getMonth() + i, 1);
-        const label = month.toLocaleDateString("en-US", { month: "short" });
+        const month = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + i, 1));
         buckets.push({
-            month: label,
+            month: month.toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }),
             count: 0,
             urgency: i === 0 ? "critical" : i <= 2 ? "warning" : "stable",
         });
     }
-
     for (const c of commitments) {
-        if (c.status !== "active") continue;
-        const endDate = new Date(c.end_date);
-        const monthDiff =
-            (endDate.getFullYear() - now.getFullYear()) * 12 +
-            (endDate.getMonth() - now.getMonth());
-        if (monthDiff >= 0 && monthDiff < 6) {
-            buckets[monthDiff].count++;
-        }
+        if (c.status !== "active" || c.daysRemaining === null || c.daysRemaining <= 0) continue;
+        const end = new Date(c.end_date);
+        const monthDiff = (end.getUTCFullYear() - now.getUTCFullYear()) * 12 + end.getUTCMonth() - now.getUTCMonth();
+        if (monthDiff >= 0 && monthDiff < 6) buckets[monthDiff].count++;
     }
-
     return buckets;
 }
 
+function RequestError({ title, message }: { title: string; message: string }) {
+    return (
+        <div role="alert" className="rounded-2xl border border-rose-500/20 bg-slate-900/50 p-6">
+            <AlertTriangle className="mb-3 h-5 w-5 text-rose-400" />
+            <h2 className="font-semibold text-white">{title}</h2>
+            <p className="mt-2 text-sm text-slate-400">{message}</p>
+            <button onClick={() => window.location.reload()} className="mt-4 rounded-xl bg-indigo-600 px-4 py-2 text-sm text-white hover:bg-indigo-500">Retry</button>
+        </div>
+    );
+}
+
 export default function CommitmentsPage() {
-    const [commitments, setCommitments] = useState<CloudCommitment[]>([]);
+    const [snapshot, setSnapshot] = useState<FinanceCommitmentsResponse | null>(null);
     const [recommendation, setRecommendation] = useState<CommitmentRecommendationResponse | null>(null);
     const [loading, setLoading] = useState(true);
+    const [recommendationLoading, setRecommendationLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [recommendationError, setRecommendationError] = useState<string | null>(null);
 
     useEffect(() => {
-        const loadData = async () => {
-            setLoading(true);
-            setError(null);
-
+        const controller = new AbortController();
+        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]);
+        const loadInventory = async () => {
             try {
-                const [commitmentsResponse, recommendationResponse] = await Promise.all([
-                    fetch("/api/finance/commitments", { cache: "no-store" }),
-                    fetch("/api/finance/commitment-recommendation", { cache: "no-store" }),
-                ]);
-
-                if (!commitmentsResponse.ok) {
-                    const payload = await commitmentsResponse.json().catch(() => ({}));
-                    setError(
-                        typeof payload?.detail === "string"
-                            ? payload.detail
-                            : "Failed to load commitments"
-                    );
-                    setCommitments([]);
-                } else {
-                    const payload = (await commitmentsResponse.json()) as FinanceCommitmentsResponse;
-                    setCommitments(payload.commitments ?? []);
-                }
-
-                if (recommendationResponse.ok) {
-                    const payload = await recommendationResponse.json();
-                    setRecommendation(payload as CommitmentRecommendationResponse);
-                } else {
-                    setRecommendation(null);
-                }
+                const data = await loadCommitmentSnapshot(signal);
+                if (!controller.signal.aborted) setSnapshot(data);
             } catch (requestError) {
-                setError(
-                    requestError instanceof Error
-                        ? requestError.message
-                        : "Failed to load commitments"
-                );
+                if (!controller.signal.aborted) setError(requestError instanceof Error ? requestError.message : "Failed to load commitments.");
             } finally {
-                setLoading(false);
+                if (!controller.signal.aborted) setLoading(false);
             }
         };
-        void loadData();
+        const loadRecommendations = async () => {
+            try {
+                const data = await loadCommitmentRecommendations(signal);
+                if (!controller.signal.aborted) setRecommendation(data);
+            } catch (requestError) {
+                if (!controller.signal.aborted) setRecommendationError(requestError instanceof Error ? requestError.message : "Failed to load provider recommendations.");
+            } finally {
+                if (!controller.signal.aborted) setRecommendationLoading(false);
+            }
+        };
+        void loadInventory();
+        void loadRecommendations();
+        return () => controller.abort();
     }, []);
 
-    // Derived metrics
-    const formattedCommitments: FormattedCommitment[] = commitments.map((item) => {
-        const endDate = new Date(item.end_date);
-        const now = new Date();
-        const daysRemaining = Math.ceil((endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-
-        let displayStatus: "Critical" | "Warning" | "Stable" = "Stable";
-        if (daysRemaining < 30) displayStatus = "Critical";
-        else if (daysRemaining < 90) displayStatus = "Warning";
-
+    const formattedCommitments: FormattedCommitment[] = (snapshot?.commitments ?? []).map((item) => {
+        const end = new Date(item.end_date).getTime();
         return {
             ...item,
-            region: item.region ?? null,
-            daysRemaining,
-            displayStatus,
-            endDateStr: endDate.toLocaleDateString("en-US", {
-                year: "numeric",
-                month: "short",
-                day: "numeric",
-            }),
-            formattedAmount: formatMoney(item.commitment_amount),
-            formattedSavings: formatMoney(item.savings_amount),
-            riskLevel: computeRiskLevel(item.utilization_pct, daysRemaining),
+            daysRemaining: Number.isFinite(end) ? Math.ceil((end - new Date().getTime()) / 86_400_000) : null,
+            endDateStr: formatCommitmentDate(item.end_date),
+            formattedAmount: formatCommitmentMoney(item.commitment_amount, item.currency),
+            formattedSavings: formatCommitmentMoney(item.savings_amount, item.currency),
         };
     });
-
-    const activeCommitments = formattedCommitments.filter((c) => c.status === "active");
-    const hasCommitments = activeCommitments.length > 0;
-
-    const totalPortfolioValue = activeCommitments.reduce((acc, c) => acc + c.commitment_amount, 0);
-    const totalMonthlySavings = activeCommitments.reduce((acc, c) => acc + c.savings_amount, 0);
-    const totalWaste = activeCommitments.reduce(
-        (acc, c) => acc + c.commitment_amount * (1 - c.utilization_pct / 100),
-        0
-    );
-    const wastePct = totalPortfolioValue > 0 ? (totalWaste / totalPortfolioValue) * 100 : 0;
-
-    // Weighted average utilization
-    const avgUtilization =
-        totalPortfolioValue > 0
-            ? Math.round(
-                  activeCommitments.reduce(
-                      (acc, c) => acc + c.utilization_pct * c.commitment_amount,
-                      0
-                  ) / totalPortfolioValue
-              )
-            : 0;
-
-    // ESR: Effective Savings Rate = savings / (savings + total commitment cost)
-    const esr =
-        totalMonthlySavings + totalPortfolioValue > 0
-            ? (totalMonthlySavings / (totalMonthlySavings + totalPortfolioValue)) * 100
-            : 0;
-
-    // ROI
-    const roi = totalPortfolioValue > 0 ? (totalMonthlySavings / totalPortfolioValue) * 100 : 0;
-
-    // Coverage data from recommendation
-    const recommendedScenario =
-        recommendation?.status === "ready" ? (recommendation.recommended_scenario ?? null) : null;
-    const forecastSpend = recommendation?.forecast_eom_spend_usd ?? 0;
-    const coveredSpend = recommendedScenario?.monthly_commitment_usd ?? 0;
-    const uncoveredSpend = Math.max(forecastSpend - coveredSpend, 0);
-    const coveragePct = recommendedScenario?.commitment_pct ?? 0;
-    const hasCoverageData = Boolean(
-        recommendation?.status === "ready" && recommendedScenario && forecastSpend > 0
-    );
-    const coverageEmptyMessage =
-        recommendation?.message || "Connect a cloud account and run a scan to see coverage data.";
-    const analysisDays = recommendation?.analysis_basis_days ?? 0;
-
-    // Expiry buckets
-    const expiryBuckets = buildExpiryBuckets(formattedCommitments);
-    const criticalCount = formattedCommitments.filter(
-        (c) => c.status === "active" && c.daysRemaining > 0 && c.daysRemaining < 30
-    ).length;
-    const warningCount = formattedCommitments.filter(
-        (c) => c.status === "active" && c.daysRemaining >= 30 && c.daysRemaining < 90
-    ).length;
+    const active = formattedCommitments.filter((c) => c.status === "active" && c.daysRemaining !== null && c.daysRemaining > 0);
+    const criticalCount = active.filter((c) => c.daysRemaining !== null && c.daysRemaining < 30).length;
+    const warningCount = active.filter((c) => c.daysRemaining !== null && c.daysRemaining >= 30 && c.daysRemaining < 90).length;
 
     return (
-        <main className="min-h-screen w-full bg-slate-950 p-6 text-slate-200 md:p-10">
-            {/* Header */}
-            <div className="mb-8">
+        <main className="min-h-screen w-full space-y-8 bg-slate-950 p-6 text-slate-200 md:p-10">
+            <header>
                 <div className="mb-2 flex items-center gap-3">
-                    <div className="rounded-lg bg-emerald-500/20 p-2 text-emerald-400">
-                        <PiggyBank className="h-6 w-6" />
-                    </div>
+                    <PiggyBank className="h-6 w-6 shrink-0 text-emerald-400" />
                     <h1 className="text-3xl font-bold text-white">Commitment Command Center</h1>
                 </div>
-                <p className="text-lg text-slate-400">
-                    Manage Reserved Instances, Savings Plans, and automated discount coverage.
-                </p>
-            </div>
+                <p className="text-slate-400">Reserved Instances, Savings Plans, and committed use discounts.</p>
+            </header>
 
-            <AnimatePresence mode="wait">
-                {error ? (
-                    <motion.div
-                        key="error"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        className="rounded-2xl border border-white/10 bg-slate-900/50 p-12 text-center backdrop-blur-xl"
-                    >
-                        <AlertTriangle className="mx-auto mb-4 h-12 w-12 text-rose-500" />
-                        <h2 className="text-lg font-bold text-white">Failed to load commitments</h2>
-                        <p className="mt-2 text-sm text-slate-400">{error}</p>
-                        <button
-                            onClick={() => window.location.reload()}
-                            className="mt-6 rounded-xl bg-indigo-600 px-6 py-2 font-bold text-white transition-colors hover:bg-indigo-500"
-                        >
-                            Retry
-                        </button>
-                    </motion.div>
-                ) : (
-                    <motion.div
-                        key="content"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        className="space-y-8"
-                    >
-                        {/* Section 2: KPI Strip */}
-                        <CommitmentsKpiStrip
-                            esr={esr}
-                            monthlySavings={formatMoney(totalMonthlySavings)}
-                            coverageRate={coveragePct}
-                            waste={formatMoney(totalWaste)}
-                            wastePct={wastePct}
-                            isLoading={loading}
-                            isEmpty={!hasCommitments && !loading}
-                        />
+            {loading ? (
+                <div aria-label="Loading commitment snapshot" className="space-y-6">
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                        {[1, 2, 3, 4].map((key) => <Skeleton key={key} className="h-32 rounded-2xl bg-slate-800" />)}
+                    </div>
+                    <Skeleton className="h-60 rounded-2xl bg-slate-800" />
+                </div>
+            ) : error ? <RequestError title="Commitment snapshot unavailable" message={error} /> : snapshot ? (
+                <section className="space-y-8">
+                    <div>
+                        <h2 className="mb-3 text-lg font-semibold text-white">Account sync status</h2>
+                        {snapshot.integrations.length === 0 ? <p className="text-sm text-slate-400">No account sync status available.</p> : (
+                            <ul className="divide-y divide-white/10">
+                                {snapshot.integrations.map((integration) => (
+                                    <li key={integration.integration_id} className="space-y-2 py-3 text-sm">
+                                        <div className="flex flex-wrap items-center gap-3">
+                                            <span className="font-medium uppercase text-white">{integration.provider}</span>
+                                            <span className="break-all text-slate-400">{integration.integration_id}</span>
+                                            <span className="rounded-full border border-white/10 px-2 py-1 text-xs text-amber-300">{commitmentSyncLabel(integration.status)}</span>
+                                            {integration.stale && <span className="text-xs text-amber-300">Stale snapshot</span>}
+                                            <span className="text-slate-400">{integration.commitment_count} commitments</span>
+                                        </div>
+                                        <p className="text-xs text-slate-400">{commitmentSupportLabel(integration.provider)}</p>
+                                        <p className="text-xs text-slate-400">Last success: {formatCommitmentDate(integration.last_success_at, true)} | Last attempt: {formatCommitmentDate(integration.last_attempt_at, true)}</p>
+                                        {integration.error && <p className="text-slate-400">{integration.error}</p>}
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
+                    </div>
+                    <CommitmentsKpiStrip summary={snapshot.summary} />
+                    <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+                        <CoverageDonut />
+                        <InvestmentReturn summary={snapshot.summary} />
+                        <ExpiryTimeline buckets={buildExpiryBuckets(formattedCommitments)} criticalCount={criticalCount} warningCount={warningCount} isEmpty={active.length === 0} />
+                    </div>
+                    <InventoryTable commitments={formattedCommitments} isLoading={false} />
+                </section>
+            ) : <RequestError title="Commitment snapshot unavailable" message="No snapshot returned." />}
 
-                        {/* Section 3: Portfolio Health */}
-                        <motion.div
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: 0.2 }}
-                            className="grid grid-cols-1 gap-6 lg:grid-cols-3"
-                        >
-                            <CoverageDonut
-                                coveragePct={coveragePct}
-                                coveredSpend={formatMoney(coveredSpend)}
-                                uncoveredSpend={formatMoney(uncoveredSpend)}
-                                isEmpty={!hasCoverageData && !loading}
-                                emptyMessage={coverageEmptyMessage}
-                            />
-                            <InvestmentReturn
-                                totalCommitted={formatMoney(totalPortfolioValue)}
-                                totalSavings={formatMoney(totalMonthlySavings)}
-                                roi={roi}
-                                avgUtilization={avgUtilization}
-                                isEmpty={!hasCommitments && !loading}
-                            />
-                            <ExpiryTimeline
-                                buckets={expiryBuckets}
-                                criticalCount={criticalCount}
-                                warningCount={warningCount}
-                                isEmpty={!hasCommitments && !loading}
-                            />
-                        </motion.div>
-
-                        {/* Section 4: Inventory Table */}
-                        <motion.div
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: 0.3 }}
-                        >
-                            <InventoryTable
-                                commitments={formattedCommitments}
-                                isLoading={loading}
-                            />
-                        </motion.div>
-
-                        {/* Section 5: AI Recommendations + Scenarios */}
-                        <motion.div
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: 0.4 }}
-                            className="grid grid-cols-1 gap-6 lg:grid-cols-5"
-                        >
-                            <AiCopilotCard
-                                recommendedScenario={recommendedScenario}
-                                uncoveredSpend={formatMoney(uncoveredSpend)}
-                                coveragePct={coveragePct}
-                                analysisDays={analysisDays}
-                                formatMoney={formatMoney}
-                                isEmpty={!hasCoverageData && !loading}
-                                emptyMessage={coverageEmptyMessage}
-                            />
-                            <ScenarioComparison
-                                scenarios={recommendation?.scenarios ?? []}
-                                recommendedLabel={recommendedScenario?.label ?? null}
-                                formatMoney={formatMoney}
-                                isEmpty={!hasCoverageData && !loading}
-                                emptyMessage={coverageEmptyMessage}
-                            />
-                        </motion.div>
-                    </motion.div>
-                )}
-            </AnimatePresence>
+            {recommendationLoading ? <Skeleton aria-label="Loading provider recommendations" className="h-60 rounded-2xl bg-slate-800" /> :
+                recommendationError ? <RequestError title="Provider recommendations unavailable" message={recommendationError} /> :
+                recommendation ? (
+                    <section className="grid grid-cols-1 gap-6 lg:grid-cols-5">
+                        <ProviderRecommendationsCard data={recommendation} />
+                        <ScenarioComparison scenarios={recommendation.scenarios ?? []} currency={recommendation.currency} />
+                    </section>
+                ) : <RequestError title="Provider recommendations unavailable" message="No provider response returned." />}
         </main>
     );
 }

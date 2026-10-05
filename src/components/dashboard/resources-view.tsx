@@ -23,8 +23,10 @@ import {
     AlertOctagon,
     MapPin,
     ShieldAlert,
+    ShieldCheck,
     Layers
 } from "lucide-react";
+import { ExcludeResourceModal } from "@/components/dashboard/exclude-resource-modal";
 import { motion, AnimatePresence } from "framer-motion";
 
 const resourceTypeIcons: Record<string, typeof Server> = {
@@ -95,11 +97,14 @@ interface Resource {
     utilization: number | null;
     status: NormalizedStatus;
     waste_type: string | null;
+    waste_reason?: string | null;
     created_by: string;
     region_compliance: string;
+    integration_id?: string;
     cpu_utilization?: number;
     memory_utilization?: number;
     storage_utilization?: number;
+    tags?: Record<string, any>;
     metadata?: any;
 }
 
@@ -196,9 +201,15 @@ function CompactMetrics({ resource }: { resource: Resource }) {
     return <span className="text-xs text-slate-500">—</span>;
 }
 
-function getStatusBadge(status: NormalizedStatus) {
+function getStatusBadge(status: NormalizedStatus, wasteType?: string | null, metadata?: any) {
+    if (metadata?.excluded) {
+        return <span className="inline-flex items-center gap-1.5 rounded-full border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 text-xs font-medium text-indigo-400"><ShieldCheck className="h-3.5 w-3.5" />Shielded</span>;
+    }
+    if (status === 'zombie' && wasteType === 'oversized') {
+        return <span className="inline-flex items-center gap-1.5 rounded-full border border-orange-500/20 bg-orange-500/10 px-2.5 py-1 text-xs font-medium text-orange-400"><AlertOctagon className="h-3.5 w-3.5" />Oversized</span>;
+    }
     if (status === 'zombie') {
-        return <span className="inline-flex items-center gap-1.5 rounded-full border border-rose-500/20 bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-rose-400"><AlertOctagon className="h-3.5 w-3.5" />Zombie</span>;
+        return <span className="inline-flex items-center gap-1.5 rounded-full border border-rose-500/20 bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-rose-400"><AlertOctagon className="h-3.5 w-3.5" />Idle</span>;
     }
     if (status === 'waste') {
         return <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-400"><AlertOctagon className="h-3.5 w-3.5" />Waste</span>;
@@ -209,7 +220,7 @@ function getStatusBadge(status: NormalizedStatus) {
     if (status === 'unknown') {
         return <span className="inline-flex items-center rounded-full border border-slate-500/20 bg-slate-500/10 px-2.5 py-1 text-xs font-medium text-slate-400">Unknown</span>;
     }
-    return <span className="inline-flex items-center rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-400">Healthy</span>;
+    return <span className="inline-flex items-center rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-400">Active</span>;
 }
 
 function getCostTextClass(status: CostStatus) {
@@ -264,6 +275,7 @@ function isCostTrackedResource(resource: Resource): boolean {
 export function ResourcesView({ initialResources }: { initialResources: Resource[] }) {
     const [searchQuery, setSearchQuery] = useState("");
     const [activeTab, setActiveTab] = useState<ResourceTab>('costTracked');
+    const [shieldingResource, setShieldingResource] = useState<Resource | null>(null);
     const typeCounts = initialResources.reduce((acc: Record<string, number>, resource: Resource) => {
         const categoryKey = categorizeResourceType(resource.resource_type);
         const label = categoryKey.charAt(0).toUpperCase() + categoryKey.slice(1);
@@ -319,7 +331,7 @@ export function ResourcesView({ initialResources }: { initialResources: Resource
     const tabs: Array<{ id: ResourceTab; label: string; count: number; icon: typeof Server }> = [
         { id: 'costTracked', label: 'Cost Tracked', count: costTracked.length, icon: Server },
         { id: 'all', label: 'All Inventory', count: filteredResources.length, icon: Layers },
-        { id: 'zombie', label: 'Zombie Assets', count: zombies.length, icon: AlertOctagon },
+        { id: 'zombie', label: 'Idle & Oversized', count: zombies.length, icon: AlertOctagon },
         { id: 'shadow', label: 'Shadow IT', count: shadowIT.length, icon: MapPin },
         { id: 'orphaned', label: 'Orphaned Storage', count: orphaned.length, icon: HardDrive },
     ];
@@ -576,10 +588,12 @@ export function ResourcesView({ initialResources }: { initialResources: Resource
                                             const providerStyle = PROVIDER_BADGE_STYLES[
                                                 (resource.provider || '').toLowerCase() as keyof typeof PROVIDER_BADGE_STYLES
                                             ] ?? { bg: 'bg-slate-500/15', text: 'text-slate-400', label: '?' };
-                                            const owner = resource.metadata?.tags?.Owner
+                                            const owner = resource.tags?.Owner
+                                                || resource.tags?.owner
+                                                || resource.tags?.Team
+                                                || resource.tags?.team
+                                                || resource.metadata?.tags?.Owner
                                                 || resource.metadata?.tags?.owner
-                                                || resource.metadata?.tags?.Team
-                                                || resource.metadata?.tags?.team
                                                 || '—';
                                             const costStatus = resource.cost_status || 'unavailable';
                                             const monthlyCostLabel = resource.cost_label
@@ -642,7 +656,18 @@ export function ResourcesView({ initialResources }: { initialResources: Resource
                                                         </span>
                                                     </td>
                                                     <td className="px-4 py-3 text-center">
-                                                        {getStatusBadge(resource.status)}
+                                                        <div className="flex items-center justify-center gap-1.5">
+                                                            {getStatusBadge(resource.status, resource.waste_type, resource.metadata)}
+                                                            {(resource.status === 'zombie' || resource.status === 'waste' || resource.status === 'non_compliant') && !resource.metadata?.excluded && (
+                                                                <button
+                                                                    onClick={() => setShieldingResource(resource)}
+                                                                    className="rounded-md p-1 text-slate-500 opacity-0 transition-all group-hover:opacity-100 hover:bg-indigo-500/10 hover:text-indigo-400"
+                                                                    title="Shield from zombie detection"
+                                                                >
+                                                                    <ShieldCheck className="h-3.5 w-3.5" />
+                                                                </button>
+                                                            )}
+                                                        </div>
                                                     </td>
                                                 </tr>
                                             );
@@ -654,6 +679,16 @@ export function ResourcesView({ initialResources }: { initialResources: Resource
                     </motion.div>
                 </AnimatePresence>
             </div>
+
+            {shieldingResource && (
+                <ExcludeResourceModal
+                    resourceName={toDisplayText(shieldingResource.resource_name, 'Unknown resource')}
+                    cloudResourceId={shieldingResource.id}
+                    integrationId={shieldingResource.integration_id || shieldingResource.metadata?.integration_id || ""}
+                    provider={shieldingResource.provider || ""}
+                    onClose={() => setShieldingResource(null)}
+                />
+            )}
         </div>
     );
 }

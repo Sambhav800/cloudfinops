@@ -1,92 +1,197 @@
-"""
-AI Fix Script Generator
-Uses Gemini AI to generate executable CLI commands for fixing cloud waste.
-"""
+"""Deterministic remediation command templates for supported cloud resources."""
 
 import logging
-import os
-from typing import Dict, Any, Optional
+import re
 import shlex
-
-_USE_GOOGLE_GENAI = False
-genai_client = None
-try:
-    from google import genai as genai_client
-    _USE_GOOGLE_GENAI = True
-except Exception:
-    genai_client = None
-
-from ..config import GEMINI_API_KEY, GEMINI_FIX_MODEL
+from typing import Any, Dict, Final
 
 logger = logging.getLogger(__name__)
 
 
-class _GenAIResponseAdapter:
-    """Expose a stable `.text` attribute for existing callsites."""
-
-    def __init__(self, response: Any):
-        self._response = response
-        self.text = getattr(response, "text", "") or ""
+UNSUPPORTED_FIX_TEMPLATE_MESSAGE: Final = (
+    "No trusted remediation template is available for this action and resource."
+)
 
 
-class _AsyncGeminiModel:
-    """Compat layer for `generate_content_async` using google.genai client."""
+class UnsupportedFixTemplateError(ValueError):
+    """Raised when remediation inputs do not match a trusted command template."""
 
-    def __init__(self, client: Any, model_name: str):
-        self._client = client
-        self._model_name = model_name
-
-    async def generate_content_async(self, prompt: str) -> _GenAIResponseAdapter:
-        response = await self._client.aio.models.generate_content(
-            model=self._model_name,
-            contents=prompt,
-        )
-        return _GenAIResponseAdapter(response)
+    def __init__(self) -> None:
+        super().__init__(UNSUPPORTED_FIX_TEMPLATE_MESSAGE)
 
 
-def _shell_quote(value: Any) -> str:
-    """Quote potentially untrusted values before inserting into shell commands."""
-    return shlex.quote(str(value or ""))
+_PROVIDER_ALIASES: Final = {
+    "aws": "aws",
+    "azure": "azure",
+}
+
+_SERVICE_ALIASES: Final = {
+    "aws": {
+        "aws ec2 instance": "ec2_instance",
+        "ec2 instance": "ec2_instance",
+        "ec2": "ec2_instance",
+        "aws ebs volume": "ebs_volume",
+        "ebs volume": "ebs_volume",
+        "ebs": "ebs_volume",
+        "aws elastic ip": "elastic_ip",
+        "elastic ip": "elastic_ip",
+        "eip": "elastic_ip",
+        "aws ebs snapshot": "snapshot",
+        "aws ec2 snapshot": "snapshot",
+        "ebs snapshot": "snapshot",
+        "snapshot": "snapshot",
+    },
+    "azure": {
+        "azure virtual machine": "virtual_machine",
+        "azure vm": "virtual_machine",
+        "virtual machine": "virtual_machine",
+        "vm": "virtual_machine",
+        "azure managed disk": "managed_disk",
+        "managed disk": "managed_disk",
+        "azure public ip address": "public_ip",
+        "public ip address": "public_ip",
+        "public ip": "public_ip",
+        "azure network interface": "network_interface",
+        "network interface": "network_interface",
+        "nic": "network_interface",
+        "azure snapshot": "snapshot",
+        "snapshot": "snapshot",
+    },
+}
+
+_AWS_ID_PATTERNS: Final = {
+    "ec2_instance": re.compile(r"^i-(?:[0-9a-f]{8}|[0-9a-f]{17})$"),
+    "ebs_volume": re.compile(r"^vol-(?:[0-9a-f]{8}|[0-9a-f]{17})$"),
+    "elastic_ip": re.compile(r"^eipalloc-(?:[0-9a-f]{8}|[0-9a-f]{17})$"),
+    "snapshot": re.compile(r"^snap-(?:[0-9a-f]{8}|[0-9a-f]{17})$"),
+}
+_AWS_REGION_PATTERN: Final = re.compile(
+    r"^[a-z]{2}(?:-[a-z0-9]+){1,3}-[1-9][0-9]*$"
+)
+_AWS_SNAPSHOT_ARN_PATTERN: Final = re.compile(
+    r"^arn:(?:aws|aws-us-gov|aws-cn):ec2:[a-z0-9-]+:[0-9]{12}:"
+    r"snapshot/(snap-(?:[0-9a-f]{8}|[0-9a-f]{17}))$"
+)
+_SIZE_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_SAFE_ARGUMENT_PATTERN: Final = re.compile(
+    r"^[A-Za-z0-9/(][A-Za-z0-9._:/@+=,()\-]{0,511}$"
+)
+
+_AZURE_SUBSCRIPTION_ID = (
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
+_AZURE_RESOURCE_GROUP = r"[a-z0-9._()\-]{1,90}"
+_AZURE_RESOURCE_NAME = r"[a-z0-9._()\-]{1,80}"
+_AZURE_ID_PATTERNS: Final = {
+    "virtual_machine": re.compile(
+        rf"^/subscriptions/{_AZURE_SUBSCRIPTION_ID}"
+        rf"/resourcegroups/{_AZURE_RESOURCE_GROUP}"
+        rf"/providers/microsoft\.compute/virtualmachines/{_AZURE_RESOURCE_NAME}$",
+        re.IGNORECASE,
+    ),
+    "managed_disk": re.compile(
+        rf"^/subscriptions/{_AZURE_SUBSCRIPTION_ID}"
+        rf"/resourcegroups/{_AZURE_RESOURCE_GROUP}"
+        rf"/providers/microsoft\.compute/disks/{_AZURE_RESOURCE_NAME}$",
+        re.IGNORECASE,
+    ),
+    "public_ip": re.compile(
+        rf"^/subscriptions/{_AZURE_SUBSCRIPTION_ID}"
+        rf"/resourcegroups/{_AZURE_RESOURCE_GROUP}"
+        rf"/providers/microsoft\.network/publicipaddresses/{_AZURE_RESOURCE_NAME}$",
+        re.IGNORECASE,
+    ),
+    "network_interface": re.compile(
+        rf"^/subscriptions/{_AZURE_SUBSCRIPTION_ID}"
+        rf"/resourcegroups/{_AZURE_RESOURCE_GROUP}"
+        rf"/providers/microsoft\.network/networkinterfaces/{_AZURE_RESOURCE_NAME}$",
+        re.IGNORECASE,
+    ),
+    "snapshot": re.compile(
+        rf"^/subscriptions/{_AZURE_SUBSCRIPTION_ID}"
+        rf"/resourcegroups/{_AZURE_RESOURCE_GROUP}"
+        rf"/providers/microsoft\.compute/snapshots/{_AZURE_RESOURCE_NAME}$",
+        re.IGNORECASE,
+    ),
+}
 
 
-_ALLOWED_CLI_PREFIXES = ("az ", "aws ", "gcloud ", "kubectl ", "# ")
-_DANGEROUS_SHELL_CHARS = (";", "&&", "||", "|", "`", "$(", "${", "\n", ">>", ">")
+def _plain_text(value: Any, *, maximum_length: int) -> str:
+    """Return a bounded string without control characters or surrounding whitespace."""
+    if not isinstance(value, str):
+        raise UnsupportedFixTemplateError()
+
+    if not value or value != value.strip() or len(value) > maximum_length:
+        raise UnsupportedFixTemplateError()
+
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise UnsupportedFixTemplateError()
+
+    return value
 
 
-def _sanitize_ai_command(script: str, provider: str) -> str:
-    """Validate AI-generated CLI output is safe before returning to user."""
-    script = script.strip()
-    if not script:
-        return f"# No command generated for {provider} resource"
+def _provider_key(provider: str) -> str:
+    normalized = _plain_text(provider, maximum_length=32).casefold()
+    try:
+        return _PROVIDER_ALIASES[normalized]
+    except KeyError as error:
+        raise UnsupportedFixTemplateError() from error
 
-    for char in _DANGEROUS_SHELL_CHARS:
-        if char in script:
-            return f"# AI output contained unsafe characters — review manually:\n# {script.split(chr(10))[0][:120]}"
 
-    if not any(script.startswith(prefix) for prefix in _ALLOWED_CLI_PREFIXES):
-        return f"# AI output did not match expected CLI format — review manually:\n# {script[:120]}"
+def _service_key(provider: str, service_type: str) -> str:
+    normalized = _plain_text(service_type, maximum_length=128).casefold()
+    try:
+        return _SERVICE_ALIASES[provider][normalized]
+    except KeyError as error:
+        raise UnsupportedFixTemplateError() from error
 
-    return script
+
+def _safe_argument(value: str, *, maximum_length: int = 512) -> str:
+    argument = _plain_text(value, maximum_length=maximum_length)
+    if not _SAFE_ARGUMENT_PATTERN.fullmatch(argument):
+        raise UnsupportedFixTemplateError()
+    return shlex.quote(argument)
+
+
+def _aws_resource_id(resource_id: str, service: str) -> str:
+    maximum_length = 256 if service == "snapshot" else 64
+    identifier = _plain_text(resource_id, maximum_length=maximum_length)
+    if service == "snapshot":
+        arn_match = _AWS_SNAPSHOT_ARN_PATTERN.fullmatch(identifier)
+        if arn_match:
+            identifier = arn_match.group(1)
+
+    pattern = _AWS_ID_PATTERNS.get(service)
+    if pattern is None or not pattern.fullmatch(identifier):
+        raise UnsupportedFixTemplateError()
+    return _safe_argument(identifier, maximum_length=64)
+
+
+def _aws_region(region: str) -> str:
+    normalized = _plain_text(region, maximum_length=32)
+    if not _AWS_REGION_PATTERN.fullmatch(normalized):
+        raise UnsupportedFixTemplateError()
+    return _safe_argument(normalized, maximum_length=32)
+
+
+def _azure_resource_id(resource_id: str, service: str) -> str:
+    identifier = _plain_text(resource_id, maximum_length=512)
+    pattern = _AZURE_ID_PATTERNS.get(service)
+    if pattern is None or not pattern.fullmatch(identifier):
+        raise UnsupportedFixTemplateError()
+    return _safe_argument(identifier)
+
+
+def _target_size(recommended_size: str) -> str:
+    target = _plain_text(recommended_size, maximum_length=64)
+    if not _SIZE_PATTERN.fullmatch(target):
+        raise UnsupportedFixTemplateError()
+    return _safe_argument(target, maximum_length=64)
 
 
 class FixScriptGenerator:
-    """
-    AI-powered fix script generator using Google Gemini.
-    Generates precise CLI commands to fix cloud waste issues.
-    """
-    
-    def __init__(self):
-        """Initialize Gemini AI client. Gracefully degrades if no API key."""
-        if not GEMINI_API_KEY:
-            logger.warning("GEMINI_API_KEY not configured - fix generation will use fallback templates")
-            self.model = None
-        elif not _USE_GOOGLE_GENAI or genai_client is None:
-            logger.warning("google-genai package unavailable - fix generation will use fallback templates")
-            self.model = None
-        else:
-            self.client = genai_client.Client(api_key=GEMINI_API_KEY)
-            self.model = _AsyncGeminiModel(self.client, GEMINI_FIX_MODEL)
-    
+    """Generate CLI commands exclusively from trusted, deterministic templates."""
+
     async def generate_delete_command(
         self,
         provider: str,
@@ -94,62 +199,53 @@ class FixScriptGenerator:
         resource_id: str,
         resource_name: str,
         region: str,
-        metadata: Dict[str, Any]
+        metadata: Dict[str, Any],
     ) -> str:
-        """
-        Generate a CLI command to delete a specific resource.
-        
-        Args:
-            provider: Cloud provider (AWS, Azure, GCP)
-            service_type: Type of resource (VM, Disk, IP, etc.)
-            resource_id: Unique resource identifier
-            resource_name: Human-readable resource name
-            region: Cloud region
-            metadata: Additional context about the resource
-            
-        Returns:
-            CLI command string to delete the resource
-        """
-        if not self.model:
-            return self._generate_fallback_command(
-                provider, service_type, resource_id, resource_name, region
-            )
-        
-        prompt = f"""You are a cloud infrastructure expert. Generate a precise CLI command to delete the following resource.
-
-**Resource Details:**
-- Cloud Provider: {provider}
-- Service Type: {service_type}
-- Resource ID: {resource_id}
-- Resource Name: {resource_name}
-- Region: {region}
-- Additional Info: {metadata}
-
-**Requirements:**
-1. Generate ONLY the exact CLI command, no explanations
-2. Use the official CLI tool ({self._get_cli_tool(provider)})
-3. Include proper flags for non-interactive deletion (--yes, --force, etc.)
-4. Include region specification if required
-5. For Azure: use resource ID format
-6. For AWS: use resource ID with proper service prefix
-
-**Output Format:**
-Return ONLY the command, one line, ready to copy-paste.
-
-Example for Azure disk: `az disk delete --ids /subscriptions/.../resourceGroups/.../providers/Microsoft.Compute/disks/disk-name --yes`
-Example for AWS volume: `aws ec2 delete-volume --volume-id vol-1234567890abcdef0 --region us-east-1`
-"""
-        
+        """Generate a trusted deletion command for a supported resource."""
         try:
-            response = await self.model.generate_content_async(prompt)
-            script = response.text.strip()
-            script = script.replace("```bash", "").replace("```", "").strip()
-            return _sanitize_ai_command(script, provider)
-        except Exception as e:
-            logger.error(f"Gemini API error: {e}")
-            return self._generate_fallback_command(
-                provider, service_type, resource_id, resource_name, region
-            )
+            _ = resource_name, metadata
+            provider_name = _provider_key(provider)
+            service = _service_key(provider_name, service_type)
+
+            if provider_name == "aws":
+                identifier = _aws_resource_id(resource_id, service)
+                safe_region = _aws_region(region)
+                templates = {
+                    "ec2_instance": (
+                        f"aws ec2 terminate-instances --instance-ids {identifier} "
+                        f"--region {safe_region}"
+                    ),
+                    "ebs_volume": (
+                        f"aws ec2 delete-volume --volume-id {identifier} "
+                        f"--region {safe_region}"
+                    ),
+                    "elastic_ip": (
+                        f"aws ec2 release-address --allocation-id {identifier} "
+                        f"--region {safe_region}"
+                    ),
+                    "snapshot": (
+                        f"aws ec2 delete-snapshot --snapshot-id {identifier} "
+                        f"--region {safe_region}"
+                    ),
+                }
+                return templates[service]
+
+            identifier = _azure_resource_id(resource_id, service)
+            templates = {
+                "virtual_machine": f"az vm delete --ids {identifier} --yes",
+                "managed_disk": f"az disk delete --ids {identifier} --yes",
+                "public_ip": f"az network public-ip delete --ids {identifier}",
+                "network_interface": f"az network nic delete --ids {identifier}",
+                "snapshot": f"az snapshot delete --ids {identifier}",
+            }
+            return templates[service]
+        except UnsupportedFixTemplateError:
+            raise
+        except (KeyError, TypeError, ValueError) as error:
+            raise UnsupportedFixTemplateError() from error
+        except Exception as error:
+            logger.error("Unexpected trusted delete template failure", exc_info=True)
+            raise UnsupportedFixTemplateError() from error
 
     async def generate_resize_command(
         self,
@@ -158,35 +254,34 @@ Example for AWS volume: `aws ec2 delete-volume --volume-id vol-1234567890abcdef0
         resource_id: str,
         current_size: str,
         recommended_size: str,
-        region: str
+        region: str,
     ) -> str:
-        """
-        Generate a CLI command to resize/downscale a resource.
-        """
-        if not self.model:
-            return f"# Resize {resource_id} from {current_size} to {recommended_size} (AI unavailable)"
-        
-        prompt = f"""Generate a CLI command to resize this cloud resource to save costs.
-
-**Resource:**
-- Provider: {provider}
-- Type: {service_type}
-- ID: {resource_id}
-- Current Size: {current_size}
-- Recommended Size: {recommended_size}
-- Region: {region}
-
-Generate ONLY the command to change the size/SKU. Include --yes or --force flags.
-"""
-        
+        """Generate a trusted resize command for a supported virtual machine."""
         try:
-            response = await self.model.generate_content_async(prompt)
-            script = response.text.strip()
-            script = script.replace("```bash", "").replace("```", "").strip()
-            return _sanitize_ai_command(script, provider)
-        except Exception as e:
-            logger.error(f"Gemini API error: {e}")
-            return f"# Resize {resource_id} from {current_size} to {recommended_size} (AI unavailable)"
+            _ = current_size
+            provider_name = _provider_key(provider)
+            service = _service_key(provider_name, service_type)
+            if service not in {"ec2_instance", "virtual_machine"}:
+                raise UnsupportedFixTemplateError()
+
+            target = _target_size(recommended_size)
+            if provider_name == "aws":
+                identifier = _aws_resource_id(resource_id, service)
+                safe_region = _aws_region(region)
+                return (
+                    f"aws ec2 modify-instance-attribute --instance-id {identifier} "
+                    f"--instance-type Value={target} --region {safe_region}"
+                )
+
+            identifier = _azure_resource_id(resource_id, service)
+            return f"az vm resize --ids {identifier} --size {target}"
+        except UnsupportedFixTemplateError:
+            raise
+        except (KeyError, TypeError, ValueError) as error:
+            raise UnsupportedFixTemplateError() from error
+        except Exception as error:
+            logger.error("Unexpected trusted resize template failure", exc_info=True)
+            raise UnsupportedFixTemplateError() from error
 
     async def generate_stop_command(
         self,
@@ -194,115 +289,40 @@ Generate ONLY the command to change the size/SKU. Include --yes or --force flags
         service_type: str,
         resource_id: str,
         resource_name: str,
-        region: str
+        region: str,
     ) -> str:
-        """
-        Generate a CLI command to stop (deallocate) a resource.
-        """
-        if not self.model:
-            return self._generate_fallback_stop_command(
-                provider, service_type, resource_id, resource_name, region
-            )
-        
-        prompt = f"""Generate a CLI command to stop/deallocate this cloud resource.
-
-**Resource:**
-- Provider: {provider}
-- Type: {service_type}
-- ID: {resource_id}
-- Name: {resource_name}
-- Region: {region}
-
-Generate ONLY the command to stop/deallocate. For VMs, use deallocate to save costs.
-"""
-        
+        """Generate a trusted stop/deallocate command for a supported VM."""
         try:
-            response = await self.model.generate_content_async(prompt)
-            script = response.text.strip()
-            script = script.replace("```bash", "").replace("```", "").strip()
-            return _sanitize_ai_command(script, provider)
-        except Exception as e:
-            logger.error(f"Gemini API error: {e}")
-            return self._generate_fallback_stop_command(
-                provider, service_type, resource_id, resource_name, region
-            )
-    
-    def _get_cli_tool(self, provider: str) -> str:
-        """Get the CLI tool name for a provider."""
-        tools = {
-            "AWS": "AWS CLI (aws)",
-            "Azure": "Azure CLI (az)",
-            "GCP": "gcloud CLI"
-        }
-        return tools.get(provider, "CLI")
-    
-    def _generate_fallback_command(
-        self,
-        provider: str,
-        service_type: str,
-        resource_id: str,
-        resource_name: str,
-        region: str
-    ) -> str:
-        """
-        Fallback template-based command generation if AI fails.
-        """
-        if provider == "Azure":
-            safe_id = _shell_quote(resource_id)
-            if "disk" in service_type.lower():
-                return f"az disk delete --ids {safe_id} --yes"
-            elif "ip" in service_type.lower():
-                return f"az network public-ip delete --ids {safe_id}"
-            elif "nic" in service_type.lower():
-                return f"az network nic delete --ids {safe_id}"
-            elif "vm" in service_type.lower() or "virtual machine" in service_type.lower():
-                return f"az vm delete --ids {safe_id} --yes"
-            else:
-                return f"az resource delete --ids {safe_id}"
-        
-        elif provider == "AWS":
-            safe_id = _shell_quote(resource_id)
-            safe_region = _shell_quote(region)
-            if "ebs" in service_type.lower() or "volume" in service_type.lower():
-                return f"aws ec2 delete-volume --volume-id {safe_id} --region {safe_region}"
-            elif "eip" in service_type.lower() or "elastic ip" in service_type.lower():
-                return f"aws ec2 release-address --allocation-id {safe_id} --region {safe_region}"
-            elif "snapshot" in service_type.lower():
-                return f"aws ec2 delete-snapshot --snapshot-id {safe_id} --region {safe_region}"
-            elif "ec2" in service_type.lower() or "instance" in service_type.lower():
-                return f"aws ec2 terminate-instances --instance-ids {safe_id} --region {safe_region}"
-            else:
-                return f"# Manual deletion required for {service_type}: {safe_id}"
-        
-        return f"# Unsupported provider or service type: {provider} / {service_type}"
-    
-    def _generate_fallback_stop_command(
-        self,
-        provider: str,
-        service_type: str,
-        resource_id: str,
-        resource_name: str,
-        region: str
-    ) -> str:
-        """Fallback for stop commands."""
-        if provider == "Azure":
-            if "vm" in service_type.lower():
-                return f"az vm deallocate --ids {_shell_quote(resource_id)}"
-        elif provider == "AWS":
-            if "ec2" in service_type.lower() or "instance" in service_type.lower():
+            _ = resource_name
+            provider_name = _provider_key(provider)
+            service = _service_key(provider_name, service_type)
+            if service not in {"ec2_instance", "virtual_machine"}:
+                raise UnsupportedFixTemplateError()
+
+            if provider_name == "aws":
+                identifier = _aws_resource_id(resource_id, service)
+                safe_region = _aws_region(region)
                 return (
-                    f"aws ec2 stop-instances --instance-ids {_shell_quote(resource_id)} "
-                    f"--region {_shell_quote(region)}"
+                    f"aws ec2 stop-instances --instance-ids {identifier} "
+                    f"--region {safe_region}"
                 )
-        
-        return f"# Stop command not available for {service_type}"
+
+            identifier = _azure_resource_id(resource_id, service)
+            return f"az vm deallocate --ids {identifier}"
+        except UnsupportedFixTemplateError:
+            raise
+        except (KeyError, TypeError, ValueError) as error:
+            raise UnsupportedFixTemplateError() from error
+        except Exception as error:
+            logger.error("Unexpected trusted stop template failure", exc_info=True)
+            raise UnsupportedFixTemplateError() from error
 
 
-# Singleton instance
-_generator = None
+_generator: FixScriptGenerator | None = None
+
 
 def get_fix_generator() -> FixScriptGenerator:
-    """Get or create the fix script generator instance."""
+    """Get or create the deterministic fix script generator singleton."""
     global _generator
     if _generator is None:
         _generator = FixScriptGenerator()

@@ -13,6 +13,7 @@ Version: 2.0.0
 """
 
 import json
+import math
 import os
 import logging
 import urllib.error
@@ -24,9 +25,8 @@ from azure.identity import ClientSecretCredential
 from azure.mgmt.compute import ComputeManagementClient
 from azure.mgmt.network import NetworkManagementClient
 from azure.mgmt.monitor import MonitorManagementClient
-from azure.mgmt.resource import ResourceManagementClient
+from azure.mgmt.resource.resources import ResourceManagementClient
 from azure.mgmt.storage import StorageManagementClient
-from azure.core.exceptions import HttpResponseError
 
 from ..core.retry import call_with_backoff, is_azure_retryable
 from ..core.carbon_model import estimate_monthly_carbon_kg, estimate_storage_carbon_kg
@@ -75,7 +75,7 @@ class AzureWasteScanner:
     # costs in the subscription's billing currency
     CURRENCY_TO_USD: Dict[str, float] = {
         "USD": 1.0,
-        "INR": 0.012,   # 1 INR ≈ $0.012
+        "INR": 0.01051, # 1 INR ≈ $0.01051 (1 USD = 95.19 INR)
         "EUR": 1.08,
         "GBP": 1.27,
         "JPY": 0.0067,
@@ -120,6 +120,12 @@ class AzureWasteScanner:
         self.subscription_id = subscription_id
         self.findings: List[Dict[str, Any]] = []
         self._exchange_rates = exchange_rates or {}
+        self._cost_rate_limited: bool = False
+        self._billing_status: str = "never"
+        self._billing_observed_at: Optional[str] = None
+        self._billing_last_success_at: Optional[str] = None
+        self._billing_retry_at: Optional[str] = None
+        self._billing_error: Optional[str] = None
         
         # Load configuration from environment with defaults
         self.CPU_THRESHOLD = float(os.getenv("ZOMBIE_CPU_THRESHOLD", "2.0"))
@@ -129,7 +135,7 @@ class AzureWasteScanner:
             "REQUIRED_TAGS", "Owner,CostCenter,Environment"
         ).split(",")
         self.ALLOWED_REGIONS = os.getenv(
-            "ALLOWED_REGIONS", "eastus,westus,eastus2,centralindia"
+            "ALLOWED_REGIONS", "eastus,eastus2,westus,westus2,westus3,centralus,northcentralus,southcentralus,centralindia,southindia,westindia,northeurope,westeurope,southeastasia,eastasia"
         ).split(",")
         
         # Create Azure credential
@@ -163,8 +169,13 @@ class AzureWasteScanner:
         
         logger.info(f"AzureWasteScanner initialized for subscription: {subscription_id}")
 
-    def _azure_call(self, operation_name: str, func):
-        return call_with_backoff(operation_name, func, is_retryable=is_azure_retryable)
+    def _azure_call(self, operation_name: str, func, *, base_delay: float = 1.0, max_delay: float = 16.0):
+        return call_with_backoff(
+            operation_name, func,
+            is_retryable=is_azure_retryable,
+            base_delay=base_delay,
+            max_delay=max_delay,
+        )
 
     def _azure_list(self, operation_name: str, func) -> list[Any]:
         return self._azure_call(operation_name, lambda: list(func()))
@@ -299,39 +310,59 @@ class AzureWasteScanner:
                                     "network_in_mb": 0.0  # Will be updated below
                                 })
             
-            # Query Network metrics
+            # Query Network, Memory, Disk metrics in one call
+            memory_avg: Optional[float] = None
+            memory_max: Optional[float] = None
+            disk_iops_avg: Optional[float] = None
+            disk_throughput_mbps: Optional[float] = None
+            network_max = 0.0
+
             try:
-                net_response = self._azure_call(
-                    f"Azure VM network metrics ({resource_id})",
+                multi_response = self._azure_call(
+                    f"Azure VM multi-metrics ({resource_id})",
                     lambda: self.monitor_client.metrics.list(
                         resource_uri=resource_id,
                         timespan=timespan,
                         interval="P1D",
-                        metricnames="Network In Total",
-                        aggregation="Maximum"
+                        metricnames="Network In Total,Available Memory Bytes,OS Disk IOPS Consumed Percentage,OS Disk Bandwidth Consumed Percentage",
+                        aggregation="Average,Maximum"
                     ),
                 )
-                
+
                 network_values: List[float] = []
+                memory_pcts: List[float] = []
+                disk_iops_pcts: List[float] = []
+                disk_bw_pcts: List[float] = []
                 net_idx = 0
-                
-                for metric in net_response.value:
-                    if "Network In" in metric.name.value:
-                        for ts in metric.timeseries:
-                            for data in ts.data:
-                                if data.maximum is not None:
-                                    network_mb = data.maximum / (1024 * 1024)
-                                    network_values.append(network_mb)
-                                    # Update corresponding data point
-                                    if net_idx < len(data_points):
-                                        data_points[net_idx]["network_in_mb"] = round(network_mb, 2)
-                                    net_idx += 1
-                
+
+                for metric in multi_response.value:
+                    metric_name = metric.name.value
+                    for ts in metric.timeseries:
+                        for data in ts.data:
+                            if "Network In" in metric_name and data.maximum is not None:
+                                network_mb = data.maximum / (1024 * 1024)
+                                network_values.append(network_mb)
+                                if net_idx < len(data_points):
+                                    data_points[net_idx]["network_in_mb"] = round(network_mb, 2)
+                                net_idx += 1
+                            elif "Available Memory" in metric_name and data.average is not None:
+                                memory_pcts.append(data.average)
+                            elif "IOPS Consumed" in metric_name and data.average is not None:
+                                disk_iops_pcts.append(data.average)
+                            elif "Bandwidth Consumed" in metric_name and data.average is not None:
+                                disk_bw_pcts.append(data.average)
+
                 network_max = max(network_values) if network_values else 0.0
+                if memory_pcts:
+                    memory_avg = round(sum(memory_pcts) / len(memory_pcts), 2)
+                    memory_max = round(max(memory_pcts), 2)
+                if disk_iops_pcts:
+                    disk_iops_avg = round(sum(disk_iops_pcts) / len(disk_iops_pcts), 2)
+                if disk_bw_pcts:
+                    disk_throughput_mbps = round(sum(disk_bw_pcts) / len(disk_bw_pcts), 2)
             except Exception as e:
-                logger.warning(f"Failed to get network metrics for {resource_id}: {e}")
-                network_max = 0.0
-            
+                logger.warning(f"Failed to get extended metrics for {resource_id}: {e}")
+
             # Calculate aggregates
             if cpu_averages:
                 cpu_avg = sum(cpu_averages) / len(cpu_averages)
@@ -341,10 +372,16 @@ class AzureWasteScanner:
                 cpu_avg = None
                 cpu_max = None
                 has_data = False
-            
+
             return {
                 "cpu_avg": round(cpu_avg, 2) if cpu_avg is not None else None,
                 "cpu_max": round(cpu_max, 2) if cpu_max is not None else None,
+                "cpu_utilization": round(cpu_avg, 2) if cpu_avg is not None else None,
+                "cpu_utilization_avg": round(cpu_avg, 2) if cpu_avg is not None else None,
+                "memory_avg_pct": memory_avg,
+                "memory_max_pct": memory_max,
+                "disk_iops_consumed_pct": disk_iops_avg,
+                "disk_bandwidth_consumed_pct": disk_throughput_mbps,
                 "network_in_max_mb": round(network_max, 2),
                 "data_points": data_points,
                 "days_with_data": len(cpu_averages),
@@ -363,6 +400,48 @@ class AzureWasteScanner:
                 "error": str(e)
             }
     
+    def _get_vm_metrics_hourly(self, resource_id: str, lookback_days: int = 30) -> Optional[List[float]]:
+        """
+        Fetch hourly CPU metrics for workload pattern analysis.
+
+        Returns a list of hourly CPU average values (up to 720 points for 30 days)
+        ordered chronologically, or None if the fetch fails.
+        """
+        try:
+            end_time = datetime.now(timezone.utc)
+            start_time = end_time - timedelta(days=lookback_days)
+            timespan = (
+                f"{start_time.strftime('%Y-%m-%dT%H:%M:%SZ')}/"
+                f"{end_time.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+            )
+
+            response = self._azure_call(
+                f"Azure VM hourly CPU metrics ({resource_id})",
+                lambda: self.monitor_client.metrics.list(
+                    resource_uri=resource_id,
+                    timespan=timespan,
+                    interval="PT1H",
+                    metricnames="Percentage CPU",
+                    aggregation="Average"
+                ),
+            )
+
+            hourly_values: List[float] = []
+            for metric in response.value:
+                if metric.name.value == "Percentage CPU":
+                    for ts in metric.timeseries:
+                        for data in ts.data:
+                            hourly_values.append(data.average if data.average is not None else 0.0)
+
+            if len(hourly_values) < 48:
+                return None
+
+            return hourly_values
+
+        except Exception as e:
+            logger.debug(f"Hourly metrics fetch failed for {resource_id}: {e}")
+            return None
+
     def _calculate_confidence(
         self,
         avg_cpu: float,
@@ -444,7 +523,7 @@ class AzureWasteScanner:
         # Try real cost first
         if hasattr(self, '_real_costs') and resource_id:
             real = self._real_costs.get(resource_id.lower())
-            if real and (real.get("actual_cost_mtd", 0) or real.get("actual_cost_30d", 0)) > 0:
+            if real and ("actual_cost_mtd" in real or "actual_cost_30d" in real):
                 actual = real.get("actual_cost_mtd", real.get("actual_cost_30d", 0))
                 return round(actual, 2), True
         
@@ -454,7 +533,7 @@ class AzureWasteScanner:
         """Return exact current-month resource cost from Azure Cost Management when present."""
         if hasattr(self, '_real_costs') and resource_id:
             real = self._real_costs.get(resource_id.lower())
-            if real and (real.get("actual_cost_mtd", 0) or real.get("actual_cost_30d", 0)) > 0:
+            if real and ("actual_cost_mtd" in real or "actual_cost_30d" in real):
                 actual = real.get("actual_cost_mtd", real.get("actual_cost_30d", 0))
                 return round(float(actual), 2), True
         return 0.0, False
@@ -483,349 +562,53 @@ class AzureWasteScanner:
         proportion = hours_running / 730.0 if hours_running < 730 else 1.0
         return round(monthly_kg * proportion, 3)
     
+    def _billing_to_usd(self, amount: float, currency: str) -> float:
+        """Keep daily billing precision and refuse unknown currency conversion."""
+        if currency == "USD":
+            return amount
+        rate = self._exchange_rates.get(currency)
+        if rate is None or not math.isfinite(float(rate)) or float(rate) <= 0:
+            raise ValueError("Billing exchange rate is unavailable")
+        return amount * float(rate)
+
+    def fetch_billing(self) -> Dict[str, Any]:
+        """Fetch one bounded billing snapshot independently from inventory."""
+        from .azure_billing import AzureBillingReader
+
+        reader = AzureBillingReader(
+            self.credential, self.subscription_id, self._billing_to_usd,
+        )
+        snapshot = reader.fetch()
+        billing = snapshot.get("billing", {})
+        status = billing.get("status", "unavailable")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if status == "fresh":
+            self._billing_status = "ok"
+            self._billing_observed_at = billing.get("observed_at") or now_iso
+            self._billing_last_success_at = now_iso
+            self._billing_retry_at = None
+            self._billing_error = None
+        else:
+            reason = billing.get("reason") or status
+            self._billing_status = "rate_limited" if reason == "rate_limited" else "failed"
+            self._billing_observed_at = billing.get("observed_at")
+            self._billing_retry_at = billing.get("retry_at") or reader.retry_at
+            self._billing_error = reason
+            if reason == "rate_limited":
+                self._cost_rate_limited = True
+        return snapshot
+
     def _fetch_real_costs(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Fetch actual cost data from Azure Cost Management API.
-        
-        Returns a map of lowercase resource_id -> cost info.
-        Returns empty dict if Cost Management API is unavailable
-        (user hasn't granted Cost Management Reader role, or SDK
-        not installed, or any other failure).
-        
-        This method NEVER raises exceptions — it always returns
-        a dict (possibly empty) so the scanner can keep running while
-        marking per-resource pricing unavailable where Azure does not
-        return exact billing data.
-        
-        Returns:
-            Dict mapping lowercase resource_id -> {
-                "actual_cost_mtd": float,
-                "daily_costs": list of {"date": str, "amount": float},
-                "currency": str
-            }
-        """
-        try:
-            from azure.mgmt.costmanagement import CostManagementClient
-        except ImportError:
-            logger.warning(
-                "azure-mgmt-costmanagement not installed. "
-                "Exact Azure resource costs unavailable. Install with: "
-                "pip install azure-mgmt-costmanagement"
-            )
-            return {}
-        
-        try:
-            cost_client = CostManagementClient(
-                credential=self.credential,
-                subscription_id=self.subscription_id
-            )
-            
-            end_date = datetime.now(timezone.utc)
-            start_date = end_date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            
-            scope = f"/subscriptions/{self.subscription_id}"
-            
-            # Query 1: Cost per resource (current month-to-date total)
-            resource_query = {
-                "type": "ActualCost",
-                "timeframe": "Custom",
-                "time_period": {
-                    "from": start_date.strftime("%Y-%m-%dT00:00:00Z"),
-                    "to": end_date.strftime("%Y-%m-%dT23:59:59Z")
-                },
-                "dataset": {
-                    "granularity": "None",
-                    "aggregation": {
-                        "totalCost": {
-                            "name": "Cost",
-                            "function": "Sum"
-                        }
-                    },
-                    "grouping": [
-                        {
-                            "type": "Dimension",
-                            "name": "ResourceId"
-                        }
-                    ]
-                }
-            }
-            
-            result = self._azure_call(
-                "Azure Cost Management resource usage query",
-                lambda: cost_client.query.usage(
-                    scope=scope,
-                    parameters=resource_query
-                ),
-            )
-            
-            cost_map: Dict[str, Dict[str, Any]] = {}
-            
-            if result.rows:
-                for row in result.rows:
-                    cost = float(row[0])
-                    resource_id = str(row[1]).lower()
-                    currency = str(row[2]) if len(row) > 2 else "USD"
-                    
-                    cost_usd = self._to_usd(cost, currency)
-                    cost_map[resource_id] = {
-                        "actual_cost_mtd": cost_usd,
-                        "actual_cost_30d": cost_usd,  # Backward-compatible key; value is MTD.
-                        "daily_costs": [],
-                        "currency": "USD",
-                        "original_currency": currency,
-                        "original_amount": round(cost, 2),
-                        "period": "current_month_to_date",
-                        "period_start": start_date.date().isoformat(),
-                        "period_end": end_date.date().isoformat(),
-                    }
-            
-            # ── Query 2: Daily breakdown for trending ──
-            daily_query = {
-                "type": "ActualCost",
-                "timeframe": "Custom",
-                "time_period": {
-                    "from": start_date.strftime("%Y-%m-%dT00:00:00Z"),
-                    "to": end_date.strftime("%Y-%m-%dT23:59:59Z")
-                },
-                "dataset": {
-                    "granularity": "Daily",
-                    "aggregation": {
-                        "totalCost": {
-                            "name": "Cost",
-                            "function": "Sum"
-                        }
-                    },
-                    "grouping": [
-                        {
-                            "type": "Dimension",
-                            "name": "ResourceId"
-                        }
-                    ]
-                }
-            }
-            
-            try:
-                daily_result = self._azure_call(
-                    "Azure Cost Management daily resource usage query",
-                    lambda: cost_client.query.usage(
-                        scope=scope,
-                        parameters=daily_query
-                    ),
-                )
-                
-                if daily_result.rows:
-                    for row in daily_result.rows:
-                        cost = float(row[0])
-                        date_val = str(row[1])
-                        resource_id = str(row[2]).lower()
-                        currency = str(row[3]) if len(row) > 3 else cost_map.get(resource_id, {}).get("original_currency", "USD")
-                        
-                        # Format date: API returns YYYYMMDD or int
-                        if len(date_val) == 8:
-                            formatted_date = (
-                                f"{date_val[:4]}-{date_val[4:6]}-"
-                                f"{date_val[6:]}"
-                            )
-                        else:
-                            formatted_date = date_val
-                        
-                        if resource_id in cost_map:
-                            cost_map[resource_id]["daily_costs"].append({
-                                "date": formatted_date,
-                                "amount": round(self._to_usd(cost, currency), 4)
-                            })
-            except Exception as e:
-                logger.debug(
-                    f"Daily cost breakdown failed (non-critical): {e}"
-                )
-            
-            logger.info(
-                f"Fetched real costs for {len(cost_map)} resources "
-                f"from Azure Cost Management"
-            )
-            return cost_map
-            
-        except HttpResponseError as e:
-            if "AuthorizationFailed" in str(e) or "403" in str(e):
-                logger.warning(
-                    "Cost Management Reader role not granted. "
-                    "Exact Azure resource costs unavailable. Ask user to assign "
-                    "'Cost Management Reader' role to the service "
-                    "principal."
-                )
-            else:
-                logger.warning(
-                    f"Azure Cost Management API error: {e}. "
-                    f"Exact Azure resource costs unavailable."
-                )
-            return {}
-        except Exception as e:
-            logger.warning(
-                f"Could not fetch real costs (falling back to "
-                f"billing-unavailable resource costs): {e}"
-            )
-            return {}
-    
+        """Compatibility entry point; reuse a single snapshot on this scanner."""
+        if not hasattr(self, "_billing_snapshot"):
+            self._billing_snapshot = self.fetch_billing()
+        return self._billing_snapshot["resource_costs"]
+
     def _fetch_subscription_cost_by_service(self) -> Dict[str, Any]:
-        """
-        Fetch total subscription cost grouped by service name.
-        Used for the service breakdown pie chart on dashboard.
-        
-        Returns:
-            Dict with:
-                "total": float (current month-to-date cost),
-                "by_service": {"Virtual Machines": 123.45, ...},
-                "daily_totals": [{"date": "2025-01-20", "amount": 12.34}],
-                "currency": str
-            Or empty dict on failure.
-        """
-        try:
-            from azure.mgmt.costmanagement import CostManagementClient
-        except ImportError:
-            return {}
-        
-        try:
-            cost_client = CostManagementClient(
-                credential=self.credential,
-                subscription_id=self.subscription_id
-            )
-            
-            end_date = datetime.now(timezone.utc)
-            start_date = end_date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            
-            scope = f"/subscriptions/{self.subscription_id}"
-            
-            # Service breakdown (current month-to-date)
-            service_query = {
-                "type": "ActualCost",
-                "timeframe": "Custom",
-                "time_period": {
-                    "from": start_date.strftime("%Y-%m-%dT00:00:00Z"),
-                    "to": end_date.strftime("%Y-%m-%dT23:59:59Z")
-                },
-                "dataset": {
-                    "granularity": "None",
-                    "aggregation": {
-                        "totalCost": {
-                            "name": "Cost",
-                            "function": "Sum"
-                        }
-                    },
-                    "grouping": [
-                        {
-                            "type": "Dimension",
-                            "name": "ServiceName"
-                        }
-                    ]
-                }
-            }
-            
-            result = self._azure_call(
-                "Azure Cost Management service usage query",
-                lambda: cost_client.query.usage(
-                    scope=scope,
-                    parameters=service_query
-                ),
-            )
-            
-            by_service: Dict[str, float] = {}
-            total = 0.0
-            billing_currency = "USD"
-            
-            if result.rows:
-                for row in result.rows:
-                    cost_raw = float(row[0])
-                    service = str(row[1])
-                    row_currency = str(row[2]) if len(row) > 2 else billing_currency
-                    billing_currency = row_currency or billing_currency
-                    cost_usd = self._to_usd(cost_raw, billing_currency)
-                    by_service[service] = cost_usd
-                    total += cost_usd
-            if billing_currency != "USD":
-                logger.info(
-                    f"Converted subscription costs from "
-                    f"{billing_currency} to USD (rate: "
-                    f"{self.CURRENCY_TO_USD.get(billing_currency, 1.0)})"
-                )
-            
-            # Daily totals for trend chart
-            daily_totals: List[Dict[str, Any]] = []
-            try:
-                daily_query = {
-                    "type": "ActualCost",
-                    "timeframe": "Custom",
-                    "time_period": {
-                        "from": start_date.strftime(
-                            "%Y-%m-%dT00:00:00Z"
-                        ),
-                        "to": end_date.strftime(
-                            "%Y-%m-%dT23:59:59Z"
-                        )
-                    },
-                    "dataset": {
-                        "granularity": "Daily",
-                        "aggregation": {
-                            "totalCost": {
-                                "name": "Cost",
-                                "function": "Sum"
-                            }
-                        }
-                    }
-                }
-                
-                daily_result = self._azure_call(
-                    "Azure Cost Management daily subscription totals query",
-                    lambda: cost_client.query.usage(
-                        scope=scope,
-                        parameters=daily_query
-                    ),
-                )
-                
-                if daily_result.rows:
-                    for row in daily_result.rows:
-                        cost_raw = float(row[0])
-                        date_val = str(row[1])
-                        row_currency = str(row[2]) if len(row) > 2 else billing_currency
-                        cost_usd = self._to_usd(
-                            cost_raw, row_currency
-                        )
-                        
-                        if len(date_val) == 8:
-                            formatted_date = (
-                                f"{date_val[:4]}-{date_val[4:6]}-"
-                                f"{date_val[6:]}"
-                            )
-                        else:
-                            formatted_date = date_val
-                        
-                        daily_totals.append({
-                            "date": formatted_date,
-                            "amount": round(cost_usd, 4)
-                        })
-            except Exception as e:
-                logger.debug(f"Daily totals fetch failed: {e}")
-            
-            logger.info(
-                f"Total subscription cost (MTD, USD-normalized): "
-                f"${total:.2f} across {len(by_service)} services"
-            )
-            
-            return {
-                "total": round(total, 2),
-                "by_service": by_service,
-                "daily_totals": daily_totals,
-                "currency": "USD",
-                "original_currency": billing_currency,
-                "period": "current_month_to_date",
-                "period_start": start_date.date().isoformat(),
-                "period_end": end_date.date().isoformat(),
-            }
-            
-        except Exception as e:
-            logger.warning(
-                f"Could not fetch subscription cost breakdown: {e}"
-            )
-            return {}
+        """Compatibility entry point sharing the same billing snapshot."""
+        if not hasattr(self, "_billing_snapshot"):
+            self._billing_snapshot = self.fetch_billing()
+        return self._billing_snapshot["subscription_costs"]
 
     def _create_finding(
         self,
@@ -846,6 +629,14 @@ class AzureWasteScanner:
         carbon_footprint_kg: float = 0.0
     ) -> Dict[str, Any]:
         """Create a standardized finding dictionary."""
+        utilization_score = None
+        if isinstance(metadata, dict):
+            utilization_score = metadata.get("utilization_score")
+        if utilization_score is None and isinstance(metrics_data, dict):
+            cpu = metrics_data.get("cpu_utilization") or metrics_data.get("cpu_avg")
+            if cpu is not None:
+                utilization_score = round(float(cpu), 1)
+
         return {
             "cloud_resource_id": cloud_resource_id,
             "resource_name": resource_name,
@@ -855,6 +646,7 @@ class AzureWasteScanner:
             "waste_type": waste_type,
             "waste_reason": waste_reason,
             "confidence_score": confidence_score,
+            "utilization_score": utilization_score,
             "metrics_data": metrics_data,
             "region": region,
             "tags": tags,
@@ -885,7 +677,7 @@ class AzureWasteScanner:
                 continue
 
             actual = float(real.get("actual_cost_mtd", real.get("actual_cost_30d", 0)) or 0)
-            if actual <= 0:
+            if not math.isfinite(actual):
                 continue
 
             current = float(finding.get("cost", 0) or 0)
@@ -1095,6 +887,7 @@ class AzureWasteScanner:
                         
                     elif power_state == "deallocated":
                         deallocated_cost = monthly_cost if cost_is_real else 0.0
+                        age_note = f" Deallocated for {instance_age_days}+ days." if instance_age_days > 7 else ""
                         self.findings.append(self._create_finding(
                             cloud_resource_id=cloud_resource_id,
                             resource_name=resource_name,
@@ -1103,8 +896,9 @@ class AzureWasteScanner:
                             status="waste",
                             waste_type="deallocated_vm",
                             waste_reason=(
-                                "VM is deallocated. Compute charges are stopped; any disk or "
-                                "storage cost is tracked on disk rows when Cost Management exposes it."
+                                f"Deallocated {vm_size} VM — compute charges stopped but attached "
+                                f"disks still incur storage cost.{age_note} "
+                                f"Action: If no longer needed, delete the VM and its disks to reclaim all costs."
                             ),
                             confidence_score=0.70,
                             metrics_data={"power_state": "deallocated"},
@@ -1166,31 +960,45 @@ class AzureWasteScanner:
                             max_cpu = metrics["cpu_max"]
                             max_net = metrics["network_in_max_mb"]
                             days = metrics["days_with_data"]
-                            
-                            # BATCH JOB CHECK
-                            if avg_cpu < self.CPU_THRESHOLD and max_cpu and max_cpu > 50.0:
-                                self.findings.append(self._create_finding(
-                                    cloud_resource_id=cloud_resource_id,
-                                    resource_name=resource_name,
-                                    service_type="Virtual Machine",
-                                    cost=monthly_cost,
-                                    status="healthy",
-                                    waste_type=None,
-                                    waste_reason=None,
-                                    confidence_score=0.0,
-                                    metrics_data=metrics,
-                                    region=region,
-                                    tags=tags,
-                                    metadata={
-                                        **base_metadata,
-                                        "note": "Low avg CPU but high spikes - likely batch/scheduled workload"
-                                    },
-                                    governance_violations=[],
-                                    carbon_footprint_kg=carbon
-                                ))
-                                
-                            # TRUE ZOMBIE CHECK
-                            elif avg_cpu < self.CPU_THRESHOLD and max_net < self.NETWORK_THRESHOLD_MB:
+                            mem_avg = metrics.get("memory_avg_pct")
+                            disk_iops = metrics.get("disk_iops_consumed_pct")
+                            disk_bw = metrics.get("disk_bandwidth_consumed_pct")
+
+                            # Build utilization summary for every VM
+                            util_parts = [f"CPU {avg_cpu:.1f}% avg / {max_cpu:.1f}% peak"]
+                            if mem_avg is not None:
+                                util_parts.append(f"Memory {mem_avg:.0f}%")
+                            if disk_iops is not None:
+                                util_parts.append(f"Disk IOPS {disk_iops:.0f}%")
+                            if disk_bw is not None:
+                                util_parts.append(f"Disk BW {disk_bw:.0f}%")
+                            util_parts.append(f"Network {max_net:.1f}MB peak")
+                            utilization_summary = " | ".join(util_parts)
+
+                            # Compute composite utilization score (0-100)
+                            scores = [avg_cpu]
+                            if mem_avg is not None:
+                                scores.append(mem_avg)
+                            if disk_iops is not None:
+                                scores.append(disk_iops)
+                            utilization_score = round(max(scores), 1)
+
+                            enriched_metadata = {
+                                **base_metadata,
+                                "avg_cpu_7d": avg_cpu,
+                                "max_cpu_7d": max_cpu,
+                                "memory_avg_pct": mem_avg,
+                                "disk_iops_consumed_pct": disk_iops,
+                                "disk_bandwidth_consumed_pct": disk_bw,
+                                "max_network_mb_7d": max_net,
+                                "utilization_score": utilization_score,
+                                "utilization_summary": utilization_summary,
+                                "observation_days": days,
+                            }
+
+                            # CLASSIFICATION based on utilization score
+                            # Idle: < 2% CPU AND < 5MB network (truly doing nothing)
+                            if avg_cpu < self.CPU_THRESHOLD and max_net < self.NETWORK_THRESHOLD_MB and (max_cpu is None or max_cpu < 10.0):
                                 confidence = self._calculate_confidence(
                                     avg_cpu, max_net, days, has_public_ip, instance_age_days
                                 )
@@ -1200,45 +1008,146 @@ class AzureWasteScanner:
                                     service_type="Virtual Machine",
                                     cost=monthly_cost,
                                     status="zombie",
-                                    waste_type="zombie_vm",
+                                    waste_type="idle",
                                     waste_reason=(
-                                        f"CPU averaged {avg_cpu:.1f}% (max {max_cpu:.1f}%) and "
-                                        f"network peaked at {max_net:.1f}MB over {days} days. "
-                                        f"VM is running but idle."
+                                        f"IDLE: {utilization_summary} over {days} days. "
+                                        f"This {vm_size} is running but processing no workload."
                                     ),
                                     confidence_score=confidence,
                                     metrics_data=metrics,
                                     region=region,
                                     tags=tags,
-                                    metadata=base_metadata,
+                                    metadata=enriched_metadata,
                                     governance_violations=[],
                                     carbon_footprint_kg=carbon
                                 ))
-                                
-                            else:
-                                # HEALTHY
-                                logger.info(
-                                    f"VM {resource_name} is HEALTHY: "
-                                    f"Avg CPU {avg_cpu:.2f}% (Limit {self.CPU_THRESHOLD}%), "
-                                    f"Max Net {max_net:.2f}MB (Limit {self.NETWORK_THRESHOLD_MB}MB), "
-                                    f"Days {days}"
+
+                            # === WORKLOAD PATTERN ANALYSIS ===
+                            # For all non-zombie running VMs, fetch 30-day hourly metrics
+                            # and classify the workload pattern for intelligent recommendations.
+                            elif days >= 5:
+                                from ..core.workload_patterns import (
+                                    MetricTimeSeries,
+                                    classify_pattern,
+                                    generate_recommendation,
+                                    WorkloadPattern,
+                                    RecommendationType,
                                 )
-                                self.findings.append(self._create_finding(
-                                    cloud_resource_id=cloud_resource_id,
-                                    resource_name=resource_name,
-                                    service_type="Virtual Machine",
-                                    cost=monthly_cost,
-                                    status="healthy",
-                                    waste_type=None,
-                                    waste_reason=None,
-                                    confidence_score=0.0,
-                                    metrics_data=metrics,
-                                    region=region,
-                                    tags=tags,
-                                    metadata=base_metadata,
-                                    governance_violations=[],
-                                    carbon_footprint_kg=carbon
-                                ))
+
+                                hourly_data = self._get_vm_metrics_hourly(vm.id, lookback_days=30)
+                                pattern_metadata = {**enriched_metadata}
+
+                                if hourly_data and len(hourly_data) >= 48:
+                                    series = MetricTimeSeries(hourly_values=hourly_data, metric_name="cpu")
+                                    analysis = classify_pattern(series)
+                                    vm_vcpus = int(vm_size.split("_")[-1].replace("s", "").replace("d", "")) if "_" in vm_size else 2
+                                    rec = generate_recommendation(
+                                        analysis,
+                                        current_vm_size=vm_size,
+                                        current_monthly_cost=monthly_cost,
+                                        current_vm_vcpus=max(vm_vcpus, 1),
+                                    )
+
+                                    pattern_metadata["workload_pattern"] = analysis.pattern.value
+                                    pattern_metadata["peak_trough_ratio"] = analysis.peak_trough_ratio
+                                    pattern_metadata["peak_avg_cpu"] = analysis.peak_avg
+                                    pattern_metadata["trough_avg_cpu"] = analysis.trough_avg
+                                    pattern_metadata["p90_cpu"] = analysis.p90
+                                    pattern_metadata["p95_cpu"] = analysis.p95
+                                    pattern_metadata["observation_days"] = analysis.observation_days
+                                    pattern_metadata["recommendation_type"] = rec.type.value
+                                    pattern_metadata["recommendation_explanation"] = rec.explanation
+                                    pattern_metadata["estimated_savings_pct"] = rec.estimated_savings_pct
+                                    pattern_metadata["pattern_confidence"] = rec.confidence
+
+                                    if rec.autoscale:
+                                        pattern_metadata["autoscale_min_instances"] = rec.autoscale.min_instances
+                                        pattern_metadata["autoscale_max_instances"] = rec.autoscale.max_instances
+                                        pattern_metadata["autoscale_scale_out_cpu"] = rec.autoscale.scale_out_cpu_pct
+                                        pattern_metadata["autoscale_scale_in_cpu"] = rec.autoscale.scale_in_cpu_pct
+                                        pattern_metadata["autoscale_cooldown_min"] = rec.autoscale.cooldown_minutes
+
+                                    if rec.schedule:
+                                        pattern_metadata["schedule_stop_days"] = rec.schedule.stop_days
+                                        pattern_metadata["schedule_savings_pct"] = rec.schedule.estimated_savings_pct
+
+                                    # Determine status based on recommendation
+                                    if rec.type == RecommendationType.AUTOSCALE:
+                                        status_val = "underutilized"
+                                        waste_type_val = "autoscale_candidate"
+                                    elif rec.type == RecommendationType.SCHEDULE:
+                                        status_val = "underutilized"
+                                        waste_type_val = "schedule_candidate"
+                                    elif rec.type == RecommendationType.RIGHTSIZE:
+                                        status_val = "underutilized"
+                                        waste_type_val = "underutilized"
+                                    elif rec.type == RecommendationType.SPOT_CANDIDATE:
+                                        status_val = "underutilized"
+                                        waste_type_val = "spot_candidate"
+                                    else:
+                                        status_val = "healthy"
+                                        waste_type_val = None
+
+                                    self.findings.append(self._create_finding(
+                                        cloud_resource_id=cloud_resource_id,
+                                        resource_name=resource_name,
+                                        service_type="Virtual Machine",
+                                        cost=monthly_cost,
+                                        status=status_val,
+                                        waste_type=waste_type_val,
+                                        waste_reason=rec.explanation,
+                                        confidence_score=rec.confidence,
+                                        metrics_data=metrics,
+                                        region=region,
+                                        tags=tags,
+                                        metadata=pattern_metadata,
+                                        governance_violations=[],
+                                        carbon_footprint_kg=carbon
+                                    ))
+
+                                else:
+                                    # Fallback: no hourly data, use simple threshold
+                                    if utilization_score < 25.0:
+                                        self.findings.append(self._create_finding(
+                                            cloud_resource_id=cloud_resource_id,
+                                            resource_name=resource_name,
+                                            service_type="Virtual Machine",
+                                            cost=monthly_cost,
+                                            status="underutilized",
+                                            waste_type="underutilized",
+                                            waste_reason=(
+                                                f"UNDERUTILIZED: {utilization_summary} over {days} days. "
+                                                f"Hourly pattern data unavailable — based on daily averages, "
+                                                f"this {vm_size} appears over-provisioned."
+                                            ),
+                                            confidence_score=0.6,
+                                            metrics_data=metrics,
+                                            region=region,
+                                            tags=tags,
+                                            metadata={**enriched_metadata, "workload_pattern": "unknown"},
+                                            governance_violations=[],
+                                            carbon_footprint_kg=carbon
+                                        ))
+                                    else:
+                                        self.findings.append(self._create_finding(
+                                            cloud_resource_id=cloud_resource_id,
+                                            resource_name=resource_name,
+                                            service_type="Virtual Machine",
+                                            cost=monthly_cost,
+                                            status="healthy",
+                                            waste_type=None,
+                                            waste_reason=(
+                                                f"ACTIVE: {utilization_summary} over {days} days. "
+                                                f"Resource is utilized within acceptable range."
+                                            ),
+                                            confidence_score=0.0,
+                                            metrics_data=metrics,
+                                            region=region,
+                                            tags=tags,
+                                            metadata={**enriched_metadata, "workload_pattern": "unknown"},
+                                            governance_violations=[],
+                                            carbon_footprint_kg=carbon
+                                        ))
                     else:
                         # Unknown power state
                         self.findings.append(self._create_finding(
@@ -1313,6 +1222,13 @@ class AzureWasteScanner:
                     }
                     
                     if is_orphaned:
+                        age_str = ""
+                        if disk.time_created:
+                            created = disk.time_created
+                            if created.tzinfo is None:
+                                created = created.replace(tzinfo=timezone.utc)
+                            disk_age = (datetime.now(timezone.utc) - created).days
+                            age_str = f" Created {disk_age} days ago."
                         self.findings.append(self._create_finding(
                             cloud_resource_id=cloud_resource_id,
                             resource_name=resource_name,
@@ -1321,7 +1237,9 @@ class AzureWasteScanner:
                             status="waste",
                             waste_type="orphan_disk",
                             waste_reason=(
-                                f"Disk ({size_gb}GB, {sku_name}) is not attached to any VM."
+                                f"Unattached {sku_name} disk ({size_gb}GB) wasting storage cost.{age_str} "
+                                f"Action: Snapshot data if needed, then delete with "
+                                f"'az disk delete --name {resource_name} --resource-group <rg>'."
                             ),
                             confidence_score=0.99,
                             metrics_data=metrics_data,
@@ -1392,7 +1310,9 @@ class AzureWasteScanner:
                             status="waste",
                             waste_type="zombie_ip",
                             waste_reason=(
-                                f"Static IP {ip_address} reserved but not attached to any resource."
+                                f"Unused static IP {ip_address} incurring charges while unattached. "
+                                f"Azure charges ~$3.65/mo for unassociated static IPs. "
+                                f"Action: Release with 'az network public-ip delete --name {resource_name} --resource-group <rg>'."
                             ),
                             confidence_score=0.99,
                             metrics_data={"ip_address": ip_address, "attached": False},
@@ -1501,7 +1421,13 @@ class AzureWasteScanner:
                                 })
                     
                     if risky_rules:
-                        rule_names = ", ".join(r["name"] for r in risky_rules)
+                        rule_details = []
+                        for r in risky_rules:
+                            port_label = "ALL PORTS" if r["port"] == "*" else f"port {r['port']}"
+                            rule_details.append(
+                                f"Rule '{r['name']}' allows {r.get('protocol', 'Any')} "
+                                f"from Internet to {port_label}"
+                            )
                         self.findings.append(self._create_finding(
                             cloud_resource_id=cloud_resource_id,
                             resource_name=resource_name,
@@ -1510,8 +1436,8 @@ class AzureWasteScanner:
                             status="non_compliant",
                             waste_type="security_risk",
                             waste_reason=(
-                                f"NSG '{nsg.name}' has {len(risky_rules)} risky inbound rule(s) "
-                                f"allowing traffic from Internet: {rule_names}"
+                                f"CRITICAL: {'; '.join(rule_details)}. "
+                                f"Restrict source IPs or use Azure Bastion for SSH/RDP access."
                             ),
                             confidence_score=1.0,
                             metrics_data={"risky_rules": risky_rules},
@@ -1568,7 +1494,9 @@ class AzureWasteScanner:
                     resource_name = account.name
                     region = account.location
                     tags = dict(account.tags) if account.tags else {}
-                    
+                    cost, cost_is_real = self._lookup_actual_resource_cost(account.id)
+                    cost_source = COST_SOURCE_ACTUAL if cost_is_real else COST_SOURCE_BILLING_UNAVAILABLE
+
                     violations: List[str] = []
                     
                     # Check public blob access
@@ -1585,19 +1513,31 @@ class AzureWasteScanner:
                         violations.append(f"TLS version {min_tls} (should be TLS1_2)")
                     
                     if violations:
+                        actions = []
+                        if "Public blob access" in str(violations):
+                            actions.append("Disable public access: az storage account update --name " + resource_name + " --allow-blob-public-access false")
+                        if "HTTPS" in str(violations):
+                            actions.append("Enforce HTTPS: az storage account update --name " + resource_name + " --https-only true")
+                        if "TLS" in str(violations):
+                            actions.append("Upgrade TLS: az storage account update --name " + resource_name + " --min-tls-version TLS1_2")
+                        action_text = " | ".join(actions) if actions else "Review security settings"
+
                         self.findings.append(self._create_finding(
                             cloud_resource_id=cloud_resource_id,
                             resource_name=resource_name,
                             service_type="Storage Account",
-                            cost=0,
+                            cost=cost,
                             status="non_compliant",
                             waste_type="security_risk",
-                            waste_reason=f"Security issues: {'; '.join(violations)}",
+                            waste_reason=(
+                                f"SECURITY: {'; '.join(violations)}. "
+                                f"Action: {action_text}"
+                            ),
                             confidence_score=1.0,
                             metrics_data={"violations": violations},
                             region=region,
                             tags=tags,
-                            metadata={"sku": account.sku.name if account.sku else "unknown"},
+                            metadata={"sku": account.sku.name if account.sku else "unknown", "cost_source": cost_source},
                             governance_violations=[]
                         ))
                     else:
@@ -1605,7 +1545,7 @@ class AzureWasteScanner:
                             cloud_resource_id=cloud_resource_id,
                             resource_name=resource_name,
                             service_type="Storage Account",
-                            cost=0,
+                            cost=cost,
                             status="healthy",
                             waste_type=None,
                             waste_reason=None,
@@ -1613,7 +1553,7 @@ class AzureWasteScanner:
                             metrics_data={},
                             region=region,
                             tags=tags,
-                            metadata={"sku": account.sku.name if account.sku else "unknown"},
+                            metadata={"sku": account.sku.name if account.sku else "unknown", "cost_source": cost_source},
                             governance_violations=[]
                         ))
                         
@@ -1670,7 +1610,11 @@ class AzureWasteScanner:
                             cost=cost,
                             status="waste",
                             waste_type="zombie_lb",
-                            waste_reason="Load balancer has no backend instances.",
+                            waste_reason=(
+                                f"Empty {sku_name} load balancer with zero backend targets. "
+                                f"Standard LBs cost ~$18/mo + data charges even with no traffic. "
+                                f"Action: Delete if no longer needed, or attach backend VMs."
+                            ),
                             confidence_score=0.95,
                             metrics_data={"backend_pools": len(pools), "sku": sku_name},
                             region=region,
@@ -1751,15 +1695,24 @@ class AzureWasteScanner:
                     
                     # 1. GOVERNANCE CHECKS
                     violations: List[Dict[str, Any]] = []
-                    
-                    # Tag compliance
-                    missing_tags = [t for t in self.REQUIRED_TAGS if t not in tags]
-                    if missing_tags:
-                        violations.append({
-                            "type": "missing_tag",
-                            "tags": missing_tags,
-                            "message": f"Missing required tags: {', '.join(missing_tags)}"
-                        })
+
+                    # Tag compliance — only enforce on billable resource types
+                    # (skip infrastructure: NSGs, NICs, VNets, subnets, route tables, watchers)
+                    resource_type_lower = resource_type.lower()
+                    skip_tag_check = any(infra in resource_type_lower for infra in (
+                        "networksecuritygroups", "networkinterfaces", "virtualnetworks",
+                        "subnets", "routetables", "networkwatchers", "natgateways",
+                        "bastionhosts", "privatednszones", "applicationgateways/sslcertificates",
+                    ))
+                    if not skip_tag_check:
+                        tags_lower = {k.lower(): k for k, v in tags.items()}
+                        missing_tags = [t for t in self.REQUIRED_TAGS if t.lower() not in tags_lower]
+                        if missing_tags:
+                            violations.append({
+                                "type": "missing_tag",
+                                "tags": missing_tags,
+                                "message": f"Missing required tags: {', '.join(missing_tags)}"
+                            })
                     
                     # Region compliance
                     region_compliant = (
@@ -1807,7 +1760,7 @@ class AzureWasteScanner:
                                 cost_source = COST_SOURCE_ACTUAL
                         
                         # Determine status
-                        status = "non_compliant" if violations else "active"
+                        status = "non_compliant" if violations else "healthy"
                         waste_type = "governance_violation" if violations else None
                         waste_reason = "; ".join(v["message"] for v in violations) if violations else None
                         
@@ -1876,6 +1829,11 @@ class AzureWasteScanner:
                     is_orphaned = nic.virtual_machine is None
                     
                     if is_orphaned:
+                        has_pip = any(
+                            ipc.public_ip_address is not None
+                            for ipc in (nic.ip_configurations or [])
+                        )
+                        pip_warning = " Has an associated public IP (also wasting cost)." if has_pip else ""
                         self.findings.append(self._create_finding(
                             cloud_resource_id=cloud_resource_id,
                             resource_name=resource_name,
@@ -1884,8 +1842,8 @@ class AzureWasteScanner:
                             status="waste",
                             waste_type="orphan_nic",
                             waste_reason=(
-                                f"Network interface '{nic.name}' is not attached "
-                                f"to any virtual machine."
+                                f"Orphaned NIC not attached to any VM — leftover from a deleted resource.{pip_warning} "
+                                f"Action: Delete with 'az network nic delete --name {nic.name} --resource-group <rg>'."
                             ),
                             confidence_score=0.95,
                             metrics_data={
@@ -1985,7 +1943,12 @@ class AzureWasteScanner:
                             cost=cost,
                             status="waste",
                             waste_type="old_snapshot",
-                            waste_reason=f"Snapshot is {age_days} days old (threshold: 30 days).",
+                            waste_reason=(
+                                f"Stale snapshot ({size_gb}GB) is {age_days} days old. "
+                                f"Standard snapshots cost ~$0.05/GB/mo = ~${size_gb * 0.05:.2f}/mo. "
+                                f"Action: Delete if backup is no longer needed — "
+                                f"'az snapshot delete --name {resource_name} --resource-group <rg>'."
+                            ),
                             confidence_score=0.8,
                             metrics_data=metric_data,
                             region=region,
@@ -2018,7 +1981,7 @@ class AzureWasteScanner:
         except Exception as e:
             logger.error(f"Failed to scan snapshots: {e}")
 
-    def scan_all(self) -> List[Dict[str, Any]]:
+    def scan_all(self, billing_snapshot: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
         Execute all scan modules and return consolidated findings.
         
@@ -2033,12 +1996,10 @@ class AzureWasteScanner:
         # Reset findings
         self.findings = []
         
-        # Fetch real cost data from Azure Cost Management
-        # This runs ONCE before all modules, and each module can use
-        # self._real_costs and self._subscription_costs
-        logger.info("Fetching cost data from Azure Cost Management...")
-        self._real_costs = self._fetch_real_costs()
-        self._subscription_costs = self._fetch_subscription_cost_by_service()
+        self._billing_snapshot = billing_snapshot if billing_snapshot is not None else self.fetch_billing()
+        self._real_costs = self._billing_snapshot.get("resource_costs", {})
+        self._subscription_costs = self._billing_snapshot.get("subscription_costs", {})
+        billing = self._billing_snapshot.get("billing", {})
         
         if self._real_costs:
             logger.info(
@@ -2074,38 +2035,69 @@ class AzureWasteScanner:
                 # Continue to next module
 
         real_cost_backfills = self._apply_real_cost_overrides()
+        for finding in self.findings:
+            metadata = finding.setdefault("metadata", {})
+            real = self._real_costs.get(str(finding.get("cloud_resource_id") or "").lower())
+            metadata["billing"] = dict(billing)
+            if real is not None:
+                metadata["cost_observed_at"] = real.get("observed_at") or billing.get("observed_at")
+                metadata["cost_period_start"] = real.get("period_start") or billing.get("period_start")
+                metadata["daily_costs"] = real.get("daily_costs", [])
+                if billing.get("status") == "stale":
+                    metadata["cost_source"] = "billing_stale"
         if real_cost_backfills:
             logger.info(
                 f"Applied {real_cost_backfills} Azure real-cost overrides from Cost Management data"
             )
         
-        # Calculate summary
+        # Calculate summary with utilization focus
         waste_items = [
             f for f in self.findings
             if f["status"] in ["waste", "zombie", "non_compliant"]
         ]
+        underutilized_items = [
+            f for f in self.findings
+            if f["status"] in ["underutilized", "oversized", "moderate"]
+        ]
         total_savings = sum(f["cost"] for f in waste_items)
         total_carbon = sum(f.get("carbon_footprint_kg", 0) for f in self.findings)
-        
+
+        # Compute fleet utilization average (VMs only)
+        vm_scores = [
+            f["utilization_score"] for f in self.findings
+            if f.get("utilization_score") is not None and "Virtual Machine" in f.get("service_type", "")
+        ]
+        fleet_utilization = round(sum(vm_scores) / len(vm_scores), 1) if vm_scores else None
+
         logger.info(
             f"Scan complete: {len(self.findings)} resources, "
-            f"{len(waste_items)} waste items, "
-            f"${total_savings:.2f} potential savings, "
-            f"{total_carbon:.2f} kg CO2"
+            f"{len(waste_items)} waste, {len(underutilized_items)} underutilized, "
+            f"fleet utilization {fleet_utilization}%, "
+            f"${total_savings:.2f} potential savings"
         )
-        
+
         # Attach subscription-level cost data for routes.py to use
         self._scan_summary = {
             "total_resources": len(self.findings),
             "waste_items": len(waste_items),
+            "underutilized_items": len(underutilized_items),
+            "fleet_utilization_pct": fleet_utilization,
             "potential_savings": total_savings,
             "total_carbon_kg": total_carbon,
+            "billing": billing,
+            "resource_costs": self._real_costs,
             "subscription_costs": self._subscription_costs if hasattr(
                 self, '_subscription_costs'
             ) else {},
             "has_real_costs": bool(
                 hasattr(self, '_real_costs') and self._real_costs
-            )
+            ),
+            "cost_rate_limited": getattr(self, '_cost_rate_limited', False),
+            "billing_status": getattr(self, '_billing_status', 'ok' if getattr(self, '_subscription_costs', None) else 'unavailable'),
+            "billing_observed_at": getattr(self, '_billing_observed_at', None),
+            "billing_last_success_at": getattr(self, '_billing_last_success_at', None),
+            "billing_retry_at": getattr(self, '_billing_retry_at', None),
+            "billing_error": getattr(self, '_billing_error', None),
         }
         
         return self.findings

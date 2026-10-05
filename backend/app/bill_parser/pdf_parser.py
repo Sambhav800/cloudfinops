@@ -18,6 +18,8 @@ from typing import Any, Iterable
 
 import pandas as pd
 
+from .validator import validate_cloud_document
+
 logger = logging.getLogger(__name__)
 
 _PDF_STREAM_RE = re.compile(rb"stream\r?\n(.*?)\r?\nendstream", re.DOTALL)
@@ -1113,6 +1115,12 @@ def parse_pdf_invoice(content: bytes, filename: str) -> tuple[pd.DataFrame, dict
             "Could not extract readable text from this PDF invoice. "
             "Upload a text-based invoice PDF or a CSV/Excel export."
         )
+
+    # Domain validation: reject non-cloud documents before attempting line-item extraction
+    combined_text = " ".join(str(line.get("line") or "") for line in lines if line.get("line"))[:8000]
+    domain_check = validate_cloud_document(combined_text)
+    if not domain_check.is_cloud_bill:
+        raise ValueError(domain_check.rejection_reason or "Not a cloud provider bill.")
 
     raw_records: list[dict[str, Any]] = []
     carry_label: str | None = None

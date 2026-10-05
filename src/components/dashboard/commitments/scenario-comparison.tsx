@@ -1,111 +1,28 @@
 "use client";
 
-import { ShieldCheck } from "lucide-react";
-import { CommitmentEmptyState } from "./empty-state";
+import type { CommitmentScenario } from "@/lib/api";
+import { formatCommitmentDate, formatCommitmentMoney, formatCommitmentPercent } from "@/lib/commitments/presentation";
 
-interface CommitmentScenario {
-    label: string;
-    commitment_pct: number;
-    monthly_commitment_usd: number;
-    monthly_saving_usd: number;
-    annual_saving_usd: number;
-    effective_discount_pct: number;
-    over_commitment_risk_pct: number;
-    risk_level: "Low" | "Medium" | "High";
-    term_years: number;
-}
-
-interface ScenarioComparisonProps {
-    scenarios: CommitmentScenario[];
-    recommendedLabel: string | null;
-    formatMoney: (usd: number) => string;
-    isEmpty: boolean;
-    emptyMessage?: string;
-}
-
-const riskColors: Record<string, { bar: string; badge: string }> = {
-    Low: { bar: "bg-emerald-500", badge: "border-emerald-500/20 bg-emerald-500/10 text-emerald-400" },
-    Medium: { bar: "bg-amber-500", badge: "border-amber-500/20 bg-amber-500/10 text-amber-400" },
-    High: { bar: "bg-rose-500", badge: "border-rose-500/20 bg-rose-500/10 text-rose-400" },
-};
-
-export function ScenarioComparison({
-    scenarios,
-    recommendedLabel,
-    formatMoney,
-    isEmpty,
-    emptyMessage,
-}: ScenarioComparisonProps) {
-    if (isEmpty || scenarios.length === 0) {
-        return (
-            <div className="lg:col-span-2">
-                <CommitmentEmptyState
-                    icon={ShieldCheck}
-                    title="No scenario data"
-                    subtitle={emptyMessage || "Need at least 14 days of spend history for scenario modeling."}
-                />
-            </div>
-        );
-    }
-
+export function ScenarioComparison({ scenarios, currency }: { scenarios: CommitmentScenario[]; currency: string }) {
     return (
-        <div className="rounded-2xl border border-white/10 bg-slate-900/50 p-6 backdrop-blur-xl lg:col-span-2">
-            <p className="mb-4 text-[10px] font-semibold uppercase tracking-[0.15em] text-slate-500">
-                Coverage Scenarios
-            </p>
-
-            <div className="space-y-3">
-                {scenarios.map((scenario) => {
-                    const isRecommended = scenario.label === recommendedLabel;
-                    const colors = riskColors[scenario.risk_level] ?? riskColors.Medium;
-
-                    return (
-                        <div
-                            key={`${scenario.label}-${scenario.term_years}`}
-                            className={`rounded-xl border p-3 transition ${
-                                isRecommended
-                                    ? "border-indigo-500/40 bg-indigo-500/5"
-                                    : "border-white/5 bg-white/[0.02]"
-                            }`}
-                        >
-                            <div className="mb-2 flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                    <span className="text-xs font-medium text-white">
-                                        {scenario.label}
-                                    </span>
-                                    <span className="text-[10px] text-slate-500">
-                                        {scenario.term_years}yr
-                                    </span>
-                                    {isRecommended && (
-                                        <span className="rounded-full border border-indigo-500/30 bg-indigo-500/10 px-1.5 py-0.5 text-[9px] font-medium text-indigo-400">
-                                            Recommended
-                                        </span>
-                                    )}
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <span className="text-xs font-medium text-emerald-400">
-                                        {formatMoney(scenario.monthly_saving_usd)}/mo
-                                    </span>
-                                    <span
-                                        className={`rounded-md border px-1.5 py-0.5 text-[9px] font-medium ${colors.badge}`}
-                                    >
-                                        {scenario.risk_level}
-                                    </span>
-                                </div>
-                            </div>
-                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
-                                <div
-                                    className={`h-full rounded-full ${colors.bar} transition-all duration-700`}
-                                    style={{ width: `${Math.min(scenario.commitment_pct, 100)}%` }}
-                                />
-                            </div>
-                            <p className="mt-1 text-[10px] text-slate-500">
-                                {scenario.commitment_pct}% coverage &middot; {scenario.effective_discount_pct}% discount
-                            </p>
-                        </div>
-                    );
-                })}
-            </div>
+        <div className="min-w-0 rounded-2xl border border-white/10 bg-slate-900/50 p-6 lg:col-span-2">
+            <h3 className="mb-4 text-sm font-semibold text-white">Provider alternatives</h3>
+            {scenarios.length === 0 ? <p className="text-sm text-slate-400">No alternatives available.</p> : (
+                <ul className="divide-y divide-white/10">
+                    {scenarios.map((scenario) => (
+                        <li key={`${scenario.integration_id}-${scenario.term_years}-${scenario.recommendation_id}`} className="space-y-2 py-3 text-xs">
+                            <p className="break-words font-medium text-white">{scenario.label} ({scenario.term_years}-year)</p>
+                            <p className="break-all text-slate-400">Account: {scenario.account_id || "Not measured"}</p>
+                            <p className="break-all text-slate-400">Integration: {scenario.integration_id}</p>
+                            <p className="text-slate-300">Monthly commitment: {formatCommitmentMoney(scenario.monthly_commitment_usd, currency)}</p>
+                            <p className="text-emerald-400">Estimated monthly savings: {formatCommitmentMoney(scenario.monthly_saving_usd, currency)}</p>
+                            <p className="text-slate-400">Estimated savings %: {formatCommitmentPercent(scenario.provider_estimated_savings_pct)}</p>
+                            <p className="text-slate-400">Risk: Not measured</p>
+                            <p className="text-slate-500">Generated: {formatCommitmentDate(scenario.generated_at, true)}</p>
+                        </li>
+                    ))}
+                </ul>
+            )}
         </div>
     );
 }

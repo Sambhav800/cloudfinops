@@ -12,6 +12,9 @@ from typing import Any
 
 import httpx
 
+from ..config import DEFAULT_GEMINI_FLASH_MODEL
+from .gemini_models import resolve_gemini_model_name
+
 logger = logging.getLogger(__name__)
 
 _GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -21,7 +24,7 @@ class GpuWorkloadAnalyzer:
     """Uses Gemini to analyze GPU workload patterns and generate intelligence reports."""
 
     def __init__(self, model: str | None = None):
-        self.model = model or os.getenv("GEMINI_AGENT_MODEL", "gemini-3.5-flash")
+        self.model = model or os.getenv("GEMINI_AGENT_MODEL", DEFAULT_GEMINI_FLASH_MODEL)
         self.api_key = os.getenv("GEMINI_API_KEY", "")
 
     async def analyze_patterns(
@@ -138,7 +141,8 @@ Return a JSON object:
 
     async def _call_gemini(self, prompt: str) -> str:
         """Make a Gemini API call."""
-        url = f"{_GEMINI_BASE_URL}/{self.model}:generateContent?key={self.api_key}"
+        model_name = await resolve_gemini_model_name(self.model, api_key=self.api_key)
+        url = f"{_GEMINI_BASE_URL}/{model_name}:generateContent?key={self.api_key}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {

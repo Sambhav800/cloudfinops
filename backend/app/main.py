@@ -27,6 +27,8 @@ from .api.slack_routes import slack_router
 from .api.architecture_routes import router as architecture_router
 from .api.discount_manager_routes import discount_router
 from .api.dashboard_summary_routes import dashboard_summary_router
+from .api.exclusion_routes import exclusion_router
+from .api.recommendations_routes import recommendations_router
 from .api.websocket import websocket_endpoint
 try:
     from .workers.anomaly_worker import start_workers, stop_workers
@@ -103,7 +105,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=list(dict.fromkeys(allowed_origins)),
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
 app.add_middleware(RateLimiterMiddleware)
@@ -135,6 +137,8 @@ app.include_router(slack_router)
 app.include_router(architecture_router)
 app.include_router(discount_router)
 app.include_router(dashboard_summary_router)
+app.include_router(exclusion_router)
+app.include_router(recommendations_router)
 
 
 # WebSocket endpoint

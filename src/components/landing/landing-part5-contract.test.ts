@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 const repoRoot = process.cwd();
 const pageSource = readFileSync(join(repoRoot, "src/app/page.tsx"), "utf8");
+const landingSource = readFileSync(join(repoRoot, "src/components/landing/landing-page.tsx"), "utf8");
 const horizontalSource = readFileSync(
   join(repoRoot, "src/components/landing/horizontal-showcase.tsx"),
   "utf8",
@@ -16,26 +17,28 @@ const workflowSource = readFileSync(
 const globalsSource = readFileSync(join(repoRoot, "src/app/globals.css"), "utf8");
 
 test("page keeps the pinned horizontal showcase and workflow sections in the live composition", () => {
+  assert.ok(pageSource.includes('import { LandingPage } from "@/components/landing/landing-page";'));
+  assert.ok(pageSource.includes("<LandingPage />"));
   assert.ok(
-    pageSource.includes('import { HorizontalShowcase } from "@/components/landing/horizontal-showcase";'),
-    "page should import the horizontal showcase section",
+    landingSource.includes('import { HorizontalShowcase } from "@/components/landing/horizontal-showcase";'),
+    "landing composition should import the horizontal showcase section",
   );
   assert.ok(
-    pageSource.includes('import { WorkflowSection } from "@/components/landing/workflow-section";'),
-    "page should import the workflow section",
+    landingSource.includes('import { WorkflowSection } from "@/components/landing/workflow-section";'),
+    "landing composition should import the workflow section",
   );
 
-  const horizontalIndex = pageSource.indexOf("<HorizontalShowcase />");
-  const unifyIndex = pageSource.indexOf("<FeatureUnify />");
-  const workflowIndex = pageSource.indexOf("<WorkflowSection />");
-  const bentoIndex = pageSource.indexOf("<CapabilitiesBento />");
-  const metricsIndex = pageSource.indexOf("<Metrics />");
+  const horizontalIndex = landingSource.indexOf("<HorizontalShowcase />");
+  const unifyIndex = landingSource.indexOf("<FeatureUnify />");
+  const workflowIndex = landingSource.indexOf("<WorkflowSection />");
+  const bentoIndex = landingSource.indexOf("<CapabilitiesBento />");
+  const metricsIndex = landingSource.indexOf("<Metrics />");
 
   assert.ok(horizontalIndex > -1 && horizontalIndex < unifyIndex, "horizontal showcase should appear before feature blocks");
   assert.ok(workflowIndex > unifyIndex && workflowIndex < bentoIndex, "workflow section should appear between feature blocks and the bento grid");
   assert.ok(bentoIndex > -1 && bentoIndex < metricsIndex, "capabilities bento should still appear before metrics");
   assert.equal(
-    pageSource.includes("<IntegrationsMarquee />"),
+    (pageSource + landingSource).includes("<IntegrationsMarquee />"),
     false,
     "page should no longer render the fake integrations marquee",
   );

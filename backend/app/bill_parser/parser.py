@@ -13,6 +13,7 @@ from typing import Any
 import pandas as pd
 
 from .cloudfront_analyzer import analyze_cloudfront_bill
+from .validator import validate_cloud_document
 from .gpu_analyzer import analyze_gpu_billing
 from .pdf_parser import parse_pdf_invoice
 
@@ -77,7 +78,9 @@ def _detect_currency_from_dataframe(df: pd.DataFrame) -> str:
     if not sample_text:
         # fall back: concatenate first-30 rows of the whole frame
         sample_text = " ".join(
-            df.head(30).astype(str).values.flatten().tolist()
+
+            str(v) for v in df.head(30).fillna("").values.flatten()
+
         )
 
     sample_lower = sample_text.lower()
@@ -425,12 +428,22 @@ def _pdf_line_items_from_metadata(source_metadata: dict[str, Any]) -> list[dict[
     return line_items
 
 
+MAX_BILL_FILE_BYTES = 20 * 1024 * 1024  # 20 MB uncompressed cap
+MAX_BILL_ROWS = 500_000
+
+
 def _read_dataframe(content: bytes, filename: str) -> tuple[pd.DataFrame, dict[str, Any]]:
+    if len(content) > MAX_BILL_FILE_BYTES:
+        raise ValueError(
+            f"File too large ({len(content) / (1024 * 1024):.0f} MB). "
+            f"Maximum supported size is {MAX_BILL_FILE_BYTES // (1024 * 1024)} MB."
+        )
+
     extension = os.path.splitext(filename)[1].lower()
     if extension == ".csv":
         for encoding in ("utf-8", "utf-8-sig", "latin1"):
             try:
-                df = pd.read_csv(io.BytesIO(content), encoding=encoding)
+                df = pd.read_csv(io.BytesIO(content), encoding=encoding, nrows=MAX_BILL_ROWS)
                 currency = _detect_currency_from_dataframe(df)
                 return df, {
                     "source_format": "csv",
@@ -443,7 +456,7 @@ def _read_dataframe(content: bytes, filename: str) -> tuple[pd.DataFrame, dict[s
 
     if extension in (".xlsx", ".xls"):
         parser_name = "pandas_excel_xlsx" if extension == ".xlsx" else "pandas_excel_xls"
-        df = pd.read_excel(io.BytesIO(content))
+        df = pd.read_excel(io.BytesIO(content), nrows=MAX_BILL_ROWS)
         currency = _detect_currency_from_dataframe(df)
         return df, {
             "source_format": extension.lstrip("."),
@@ -464,6 +477,16 @@ def parse_bill(content: bytes, filename: str) -> dict[str, Any]:
     df, source_metadata = _read_dataframe(content, filename)
     if df.empty:
         raise ValueError("Uploaded bill file is empty.")
+
+    # Domain validation: reject non-cloud documents (medical, legal, academic, etc.)
+    # Sample the first 200 cells of the dataframe header + values for fast screening
+    sample_text = " ".join(
+        str(v) for v in list(df.columns) + list(df.head(20).values.flat)
+        if v is not None and str(v).strip()
+    )[:8000]
+    domain_check = validate_cloud_document(sample_text)
+    if not domain_check.is_cloud_bill:
+        raise ValueError(domain_check.rejection_reason or "Not a cloud provider bill.")
 
     provider = _detect_provider(df, filename)
     if provider == "generic":

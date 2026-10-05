@@ -52,20 +52,20 @@ class FakeFinanceDB:
         ]
         self.history_by_integration = {
             "int-aws": [
-                {"spend_date": "2026-03-01", "amount": 20.0, "currency": "USD"},
-                {"spend_date": "2026-03-02", "amount": 21.0, "currency": "USD"},
-                {"spend_date": "2026-03-03", "amount": 22.0, "currency": "USD"},
-                {"spend_date": "2026-03-04", "amount": 23.0, "currency": "USD"},
-                {"spend_date": "2026-03-05", "amount": 24.0, "currency": "USD"},
-                {"spend_date": "2026-03-06", "amount": 25.0, "currency": "USD"},
+                {"spend_date": "2026-03-01", "amount": 20.0, "currency": "INR"},
+                {"spend_date": "2026-03-02", "amount": 21.0, "currency": "INR"},
+                {"spend_date": "2026-03-03", "amount": 22.0, "currency": "INR"},
+                {"spend_date": "2026-03-04", "amount": 23.0, "currency": "INR"},
+                {"spend_date": "2026-03-05", "amount": 24.0, "currency": "INR"},
+                {"spend_date": "2026-03-06", "amount": 25.0, "currency": "INR"},
             ],
             "int-gcp": [
-                {"spend_date": "2026-03-01", "amount": 10.0, "currency": "USD"},
-                {"spend_date": "2026-03-02", "amount": 10.0, "currency": "USD"},
-                {"spend_date": "2026-03-03", "amount": 10.0, "currency": "USD"},
-                {"spend_date": "2026-03-04", "amount": 11.0, "currency": "USD"},
-                {"spend_date": "2026-03-05", "amount": 11.0, "currency": "USD"},
-                {"spend_date": "2026-03-06", "amount": 12.0, "currency": "USD"},
+                {"spend_date": "2026-03-01", "amount": 10.0, "currency": "INR"},
+                {"spend_date": "2026-03-02", "amount": 10.0, "currency": "INR"},
+                {"spend_date": "2026-03-03", "amount": 10.0, "currency": "INR"},
+                {"spend_date": "2026-03-04", "amount": 11.0, "currency": "INR"},
+                {"spend_date": "2026-03-05", "amount": 11.0, "currency": "INR"},
+                {"spend_date": "2026-03-06", "amount": 12.0, "currency": "INR"},
             ],
         }
         self.budget_events = []
@@ -134,19 +134,19 @@ class FakeFinanceDB:
                 {
                     "spend_date": "2026-03-05",
                     "amount": 12.5,
-                    "currency": "USD",
+                    "currency": "INR",
                     "service_breakdown": {"EC2": 12.5},
                 },
                 {
                     "spend_date": "2026-03-05T07:30:00Z",
                     "amount": 7.5,
-                    "currency": "USD",
+                    "currency": "INR",
                     "service_breakdown": {"S3": 7.5},
                 },
                 {
                     "spend_date": "2026-03-06",
                     "amount": 4.0,
-                    "currency": "USD",
+                    "currency": "INR",
                     "service_breakdown": {"Lambda": 4.0},
                 },
             ]
@@ -179,6 +179,7 @@ def test_finance_forecast_portfolio_sums_active_budgets(monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload["scope"] == "portfolio"
+    assert payload["currency"] == "INR"
     assert payload["budget_limit"] == 500.0
     assert payload["budget_source"] == "portfolio_sum"
     assert payload["status"] == "forecasted_over_budget"
@@ -201,9 +202,10 @@ def test_finance_spend_history_returns_aggregated_rows(monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload["count"] == 2
+    assert payload["currency"] == "INR"
     assert payload["history"] == [
-        {"spend_date": "2026-03-05", "amount": 20.0, "currency": "USD"},
-        {"spend_date": "2026-03-06", "amount": 4.0, "currency": "USD"},
+        {"spend_date": "2026-03-05", "amount": 20.0, "currency": "INR"},
+        {"spend_date": "2026-03-06", "amount": 4.0, "currency": "INR"},
     ]
 
 
@@ -214,6 +216,21 @@ def test_finance_integration_scope_requires_integration_id(monkeypatch):
 
     assert response.status_code == 400
     assert response.json()["detail"] == "integration_id is required when scope='integration'"
+
+
+def test_empty_history_and_forecast_keep_budget_in_inr():
+    fake_db = FakeFinanceDB()
+    fake_db.history_by_integration = {}
+    fake_db.users["user-1"]["finance_settings"]["portfolio_budget_limit"] = 1000.0
+    client = _build_client(fake_db)
+    history = client.get("/api/finance/spend-history")
+    forecast = client.get("/api/finance/forecast")
+    assert history.status_code == forecast.status_code == 200
+    assert history.json()["currency"] == forecast.json()["currency"] == "INR"
+    assert history.json()["history"] == []
+    assert history.json()["count"] == 0
+    assert forecast.json()["budget_limit"] == 1000.0
+    assert forecast.json()["status"] == "insufficient_history"
 
 
 def test_finance_integration_scope_rejects_unknown_integration(monkeypatch):

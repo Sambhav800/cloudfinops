@@ -4,11 +4,15 @@ Generates a CTO-grade summary AND saves learned patterns for future use.
 """
 from google.adk import Agent
 
+from ...config import DEFAULT_GEMINI_FLASH_MODEL, GEMINI_AGENT_MODEL
+from ...core.gemini_models import is_gemini_auto_model
 from ..tools.memory_tools import save_learned_pattern
+
+_ADK_MODEL = DEFAULT_GEMINI_FLASH_MODEL if is_gemini_auto_model(GEMINI_AGENT_MODEL) else GEMINI_AGENT_MODEL
 
 reporter_agent = Agent(
     name="Executive_Reporter",
-    model="gemini-3.5-flash",
+    model=_ADK_MODEL,
     include_contents="none",
     instruction="""You are the Executive Reporter for CloudFinOps. You have TWO jobs:
 
