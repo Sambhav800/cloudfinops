@@ -2,6 +2,9 @@ import { defineConfig, devices } from "@playwright/test";
 
 const externalBaseURL = process.env.BASE_URL;
 const baseURL = externalBaseURL ?? "http://localhost:3000";
+const clerkPublishableKey =
+  process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ??
+  `pk_test_${Buffer.from("playwright.clerk.accounts.dev$").toString("base64")}`;
 
 /**
  * Playwright configuration for integration-health browser tests.
@@ -41,6 +44,9 @@ export default defineConfig({
     : {
         command: "npm run dev",
         url: "http://localhost:3000",
+        env: {
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: clerkPublishableKey,
+        },
         reuseExistingServer: !process.env.CI,
         timeout: 120_000,
       },
