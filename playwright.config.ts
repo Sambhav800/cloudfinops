@@ -1,5 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const externalBaseURL = process.env.BASE_URL;
+const baseURL = externalBaseURL ?? "http://localhost:3000";
+
 /**
  * Playwright configuration for integration-health browser tests.
  *
@@ -11,15 +14,14 @@ export default defineConfig({
   testMatch: ["**/__tests__/*.browser.spec.ts"],
   testDir: "./src",
   fullyParallel: true,
-  // Use dedicated tsconfig so moduleResolution matches Playwright's expectations
-  // without touching the Next.js tsconfig.json
+  tsconfig: "./tsconfig.playwright.json",
 
   retries: process.env.CI ? 2 : 0,
   reporter: [["list"], ["html", { open: "never", outputFolder: "playwright-report" }]],
 
   use: {
     // All requests go to the local Next.js dev server
-    baseURL: process.env.BASE_URL ?? "http://localhost:3000",
+    baseURL,
     trace: "on-first-retry",
     screenshot: "only-on-failure",
     // Run headless by default; set HEADED=1 to watch
@@ -33,13 +35,13 @@ export default defineConfig({
     },
   ],
 
-  // Start the Next.js dev server automatically if not running in CI
-  webServer: process.env.CI
+  // Start a dedicated server unless the caller explicitly supplies one.
+  webServer: externalBaseURL
     ? undefined
     : {
         command: "npm run dev",
         url: "http://localhost:3000",
-        reuseExistingServer: true,
+        reuseExistingServer: !process.env.CI,
         timeout: 120_000,
       },
 });
