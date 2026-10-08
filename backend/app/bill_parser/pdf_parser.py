@@ -1073,7 +1073,7 @@ def _source_line_entries(lines: list[str], metadata: dict[str, Any]) -> list[dic
         return entries
 
     return [
-        {"page": 0, "line_number": index, "line": line}
+        {"page": 1, "line_number": index, "line": line}
         for index, line in enumerate(lines, start=1)
     ]
 
@@ -1117,7 +1117,11 @@ def parse_pdf_invoice(content: bytes, filename: str) -> tuple[pd.DataFrame, dict
         )
 
     # Domain validation: reject non-cloud documents before attempting line-item extraction
-    combined_text = " ".join(str(line.get("line") or "") for line in lines if line.get("line"))[:8000]
+    combined_text = " ".join(
+        str(line.get("line") if isinstance(line, dict) else line or "").strip()
+        for line in lines
+        if (line.get("line") if isinstance(line, dict) else line)
+    )[:8000]
     domain_check = validate_cloud_document(combined_text)
     if not domain_check.is_cloud_bill:
         raise ValueError(domain_check.rejection_reason or "Not a cloud provider bill.")

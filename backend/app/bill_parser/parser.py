@@ -480,7 +480,7 @@ def parse_bill(content: bytes, filename: str) -> dict[str, Any]:
 
     # Domain validation: reject non-cloud documents (medical, legal, academic, etc.)
     # Sample the first 200 cells of the dataframe header + values for fast screening
-    sample_text = " ".join(
+    sample_text = f"{filename} " + " ".join(
         str(v) for v in list(df.columns) + list(df.head(20).values.flat)
         if v is not None and str(v).strip()
     )[:8000]

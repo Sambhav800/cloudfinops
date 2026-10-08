@@ -170,8 +170,8 @@ def test_parse_bill_csv_positive_rows_keep_positive_total():
 
 
 def test_parse_bill_csv_preserves_all_service_rollups_for_large_bills():
-    rows = ["Service,Cost"]
-    rows.extend(f"Custom Service {index},{index + 1}" for index in range(30))
+    rows = ["Service,Cost,Usage Type"]
+    rows.extend(f"Custom Service {index},{index + 1},On-Demand" for index in range(30))
     csv_bytes = ("\n".join(rows) + "\n").encode("utf-8")
 
     parsed = parse_bill(csv_bytes, "aws-large-bill.csv")

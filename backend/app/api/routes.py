@@ -762,7 +762,7 @@ async def _reparse_archived_bill_for_report(
 
     try:
         content, media_type, archived_filename = await download_archived_bill_from_gcs(raw_file_metadata)
-    except (RawBillStorageError, RawBillStorageNotFound) as error:
+    except Exception as error:
         logger.warning(
             "Could not reparse archived bill for analysis %s: %s",
             record.get("id"),
@@ -3340,6 +3340,17 @@ async def upload_bill(
                     ),
                 ) from error
         except ValueError as parse_error:
+            # Domain-rejection ValueErrors must NOT be recovered by Gemini
+            error_msg = str(parse_error)
+            error_lower = error_msg.lower()
+            is_domain_rejection = (
+                "cloud billing evidence" in error_lower
+                or "cloud provider bill" in error_lower
+                or "non-cloud document" in error_lower
+                or "detected " in error_lower
+            )
+            if is_domain_rejection:
+                raise HTTPException(status_code=422, detail=error_msg) from parse_error
             parsed = await _try_gemini_direct_extraction("parser error")
             if not parsed:
                 raise parse_error
@@ -3521,13 +3532,17 @@ async def upload_bill(
             )
         elif report_verification_status == "source_grounded_unverified_savings":
             total_savings = 0.0
-        raw_file_metadata = await archive_uploaded_bill_to_gcs(
-            user_id=user.id,
-            filename=filename,
-            content=content,
-            content_type=file.content_type,
-            content_hash=content_hash,
-        )
+        try:
+            raw_file_metadata = await archive_uploaded_bill_to_gcs(
+                user_id=user.id,
+                filename=filename,
+                content=content,
+                content_type=file.content_type,
+                content_hash=content_hash,
+            )
+        except Exception as error:
+            logger.warning("Raw bill archival failed for %s: %s", filename, error)
+            raw_file_metadata = None
 
         analysis_record = _build_bill_analysis_record(
             filename=filename,
@@ -3560,7 +3575,8 @@ async def upload_bill(
     except HTTPException:
         raise
     except ValueError as error:
-        raise HTTPException(status_code=422, detail="Invalid bill format or parameters.")
+        detail_msg = str(error).strip() or "Invalid bill format or parameters."
+        raise HTTPException(status_code=422, detail=detail_msg)
     except Exception as error:
         logger.error("Bill upload processing error: %s", error, exc_info=True)
         raise HTTPException(status_code=500, detail="Bill processing failed. Please try again or use a different file format.")

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Cloud-document domain validator.
 
 Rejects medical, legal, academic, and other non-cloud documents
@@ -48,21 +48,25 @@ _DISQUALIFYING_PHRASES: list[str] = [
 ]
 
 _CLOUD_BILL_PHRASES: list[str] = [
-    "amazon web services", "aws", "microsoft azure", "google cloud",
+    "amazon web services", "aws", "microsoft azure", "azure", "google cloud",
     "gcp", "oracle cloud", "digitalocean", "linode", "vultr",
     "cloudflare", "heroku",
     "cloud bill", "cloud invoice", "usage charges", "on-demand",
     "reserved instance", "savings plan", "committed use discount",
-    "spot instance", "ec2", "s3 bucket", "azure vm", "azure blob",
+    "spot instance", "ec2", "amazon ec2", "s3 bucket", "amazon s3",
+    "elastic compute cloud", "simple storage service",
+    "elastic load balancing", "relational database service",
+    "virtual private cloud", "cloudfront", "dynamodb",
+    "azure vm", "azure blob", "virtual machine", "virtual machines",
+    "blob storage", "storage account", "cosmos db", "app service",
     "compute engine", "cloud storage", "cloud sql", "cloud run",
-    "lambda function", "api gateway", "cloudwatch", "route 53",
-    "virtual machine", "storage account", "bandwidth usage",
-    "data transfer", "egress", "ingress", "pay-as-you-go",
-    "billing period", "invoice date", "due date", "account id",
+    "bigquery", "lambda function", "api gateway", "cloudwatch", "route 53",
+    "bandwidth usage", "data transfer", "egress", "ingress", "pay-as-you-go",
+    "billing period", "account id",
     "subscription id", "billing account", "resource group",
     "service category", "meter category", "product code",
     "usage type", "usage quantity", "blended cost", "unblended cost",
-    "amortized cost",
+    "amortized cost", "lineitem",
 ]
 
 
@@ -80,11 +84,19 @@ def validate_cloud_document(text: str) -> ValidationResult:
     Classify text as a cloud-provider bill or a disqualified document.
 
     Scoring:
+    - Empty or fewer than 5 words -> rejected.
     - Each disqualifying phrase hit adds 1 to disqualify_score.
     - Each cloud-bill phrase hit adds 1 to cloud_score.
     - If disqualify_score >= 3 AND disqualify_score > cloud_score -> rejected.
+    - If cloud_score < 2 -> rejected (positive cloud-billing evidence required).
     """
     normalised = _normalise(text)
+    if len(normalised.split()) < 5:
+        return ValidationResult(
+            is_cloud_bill=False,
+            rejection_reason="Document is empty or unreadable. Please upload a cloud provider bill.",
+        )
+
     disqualify_score = sum(1 for phrase in _DISQUALIFYING_PHRASES if phrase in normalised)
     cloud_score = sum(1 for phrase in _CLOUD_BILL_PHRASES if phrase in normalised)
 
@@ -96,6 +108,26 @@ def validate_cloud_document(text: str) -> ValidationResult:
             rejection_reason=(
                 f"Detected {category} (matched: '{matched}'). "
                 "Please upload a cloud provider bill."
+            ),
+        )
+
+    # Require minimum cloud-billing evidence
+    if cloud_score < 2:
+        if disqualify_score > 0:
+            matched = next(p for p in _DISQUALIFYING_PHRASES if p in normalised)
+            category = _classify_disqualifier(matched)
+            return ValidationResult(
+                is_cloud_bill=False,
+                rejection_reason=(
+                    f"Detected {category} (matched: '{matched}'). "
+                    "Please upload a cloud provider bill."
+                ),
+            )
+        return ValidationResult(
+            is_cloud_bill=False,
+            rejection_reason=(
+                "No cloud billing evidence detected. "
+                "Please upload an AWS, Azure, or GCP bill (CSV, Excel, or PDF)."
             ),
         )
 

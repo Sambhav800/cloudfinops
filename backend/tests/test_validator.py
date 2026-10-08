@@ -1,4 +1,4 @@
-﻿"""
+"""
 Unit tests for backend/app/bill_parser/validator.py
 
 Covers:
@@ -52,10 +52,12 @@ class TestCloudBillsAccepted:
         result = validate_cloud_document(text)
         assert result.is_cloud_bill is True
 
-    def test_empty_text_passes(self):
-        """Empty / whitespace-only text has no disqualifiers and must pass."""
+    def test_empty_text_rejected(self):
+        """Empty / whitespace-only text has no cloud evidence and must be rejected."""
         result = validate_cloud_document("")
-        assert result.is_cloud_bill is True
+        assert result.is_cloud_bill is False
+        assert result.rejection_reason is not None
+        assert "empty or unreadable" in result.rejection_reason.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -175,12 +177,19 @@ class TestMixedSignals:
         result = validate_cloud_document(text)
         assert result.is_cloud_bill is True
 
-    def test_two_disqualifiers_without_meeting_threshold(self):
-        """2 disqualifier hits (< 3) must not trigger rejection."""
+    def test_two_disqualifiers_with_sufficient_cloud_evidence(self):
+        """2 disqualifier hits (< 3) do not trigger rejection when cloud evidence is sufficient."""
+        text = "aws ec2 compute engine blood test result: patient serum checked"
+        result = validate_cloud_document(text)
+        assert result.is_cloud_bill is True
+
+    def test_two_disqualifiers_without_cloud_evidence_rejected(self):
+        """2 disqualifier hits with no cloud evidence must be rejected."""
         text = "blood test result: patient serum checked"
         result = validate_cloud_document(text)
-        # 2 hits: "blood test", "serum" — threshold is 3 — must pass
-        assert result.is_cloud_bill is True
+        assert result.is_cloud_bill is False
+        assert result.rejection_reason is not None
+        assert "medical" in result.rejection_reason.lower()
 
 
 # ---------------------------------------------------------------------------

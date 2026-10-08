@@ -204,8 +204,12 @@ async def archive_uploaded_bill_to_gcs(
     content_type: str | None,
     content_hash: str,
 ) -> dict[str, Any]:
-    settings = get_settings()
-    bucket = str(settings.gcs_bill_upload_bucket or "").strip()
+    try:
+        settings = get_settings()
+        bucket = str(settings.gcs_bill_upload_bucket or "").strip()
+    except Exception as error:
+        logger.warning("Could not load settings for GCS bill archival: %s", error)
+        bucket = ""
     normalized_content_type = str(content_type or "application/octet-stream").strip() or "application/octet-stream"
     size_bytes = len(content or b"")
 
